@@ -1,899 +1,1671 @@
---[[==============================================================
-    ZYNTRIX - LEAF AUTOFARM   (place 100068273119174, Muffin Interactive)
-    v2 - every constant below was re-measured against the live server.
+--============================================================--
+--              ZYNTRIX VIP PRIME • ALL-IN-ONE               --
+--          ANIMATION + EMOTE • MOBILE • DRAGGABLE            --
+--============================================================--
 
-      * Collect - LeafSim.collectMany(list) credits ONLY parts still parented
-        to LeafSim.folder AND present in its internal id map, and it RETURNS
-        the number actually banked. We use that return value, never #list, so
-        a spot full of unregistered debris is detected instead of looping.
-      * Bag full - collectBudget() = floor((LeafCapacity-Leaves)/LeafMult)
-        minus the leaves already flying as FX, so it goes <= 0 on a nearly
-        empty bag. Fullness is decided by the Leaves/LeafCapacity attributes;
-        the budget is only used to size the batch.
-      * Deposit - Remotes.EmptyBackpack:FireServer() pays at the nearest
-        Map.Dumpsters entry, at that dumpster's PricePerLeaf attribute
-        (None 0.01, Backyard 0.02, Farm 0.03). We try the richest first and
-        verify the Leaves attribute actually dropped; a dumpster that does
-        not pay (locked zone) is benched for 60s and we fall down the list.
-      * Roam - density grid over the leaf folder, restricted to the ground
-        band derived from the dumpster's own Y (keeps us out of the basement
-        pile at Y~51 and off roofs). Radius and cell threshold widen in
-        stages, last resort is the nearest single leaf, so bestSpot() can
-        only return nil when the map genuinely has no reachable leaf.
-      * Watchdog - progress = leaves banked OR cash gained. On a stall we
-        roam to a NEW cluster (the old build re-parked at the dumpster,
-        which is exactly where it had nothing to collect).
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local AvatarEditorService = game:GetService("AvatarEditorService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
 
-    One toggle runs the loop: collect -> full -> deposit -> roam. Unload: End.
-================================================================]]--
-if getgenv().__POTATO_LEAF then pcall(getgenv().__POTATO_LEAF.u) end
+local LP = Players.LocalPlayer
 
-local Players   = game:GetService("Players")
-local RunS      = game:GetService("RunService")
-local UIS       = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local RS        = game:GetService("ReplicatedStorage")
-local LP        = Players.LocalPlayer
+--============================================================--
+-- CONFIG
+--============================================================--
 
-local function tryReq(p) local ok,m = pcall(function() return require(p) end); return ok and m or nil end
+local GUI_NAME = "ZYNTRIX_VIP_PRIME"
+local LOGO_ID = "rbxassetid://11425468695"
 
-local LeafSim      = tryReq(LP:WaitForChild("PlayerScripts"):WaitForChild("LeafSim"))
-local UpgradeConf  = tryReq(RS:WaitForChild("UpgradeConfig"))
-local Remotes      = RS:WaitForChild("Remotes")
-local EmptyBackpack= Remotes:WaitForChild("EmptyBackpack")
-local BuyUpgrade   = Remotes:WaitForChild("BuyUpgrade")
-local BuyBagUpgrade= Remotes:FindFirstChild("BuyBagUpgrade")
-local BuyToolCash  = Remotes:FindFirstChild("BuyToolCash")
+local BG       = Color3.fromRGB(10,8,15)
+local CARD     = Color3.fromRGB(21,15,28)
+local CARD2    = Color3.fromRGB(30,18,40)
+local PURPLE   = Color3.fromRGB(155,45,255)
+local PURPLE2  = Color3.fromRGB(90,25,150)
+local BLUE     = Color3.fromRGB(45,110,255)
+local CYAN     = Color3.fromRGB(0,225,255)
+local GREEN    = Color3.fromRGB(0,255,140)
+local RED      = Color3.fromRGB(255,55,90)
+local WHITE    = Color3.fromRGB(245,245,250)
+local GRAY     = Color3.fromRGB(150,145,160)
+local DARK     = Color3.fromRGB(30,15,40)
 
-if not LeafSim or typeof(LeafSim.collectMany) ~= "function" or typeof(LeafSim.folder) ~= "Instance" then
-    warn("[ZYNTRIX LEAF] LeafSim not available - wrong game?")
-    return
-end
+--============================================================--
+-- CLEAN OLD GUI
+--============================================================--
 
-local W  = Color3.fromRGB(255,255,255)
-local G  = Color3.fromRGB(120,220,120)
-local R  = Color3.fromRGB(255,90,90)
-local GD = Color3.fromRGB(230,200,90)
-
-local S = { Farm=false, Smooth=true, BuyUpg=false, BuyBag=false, BuyRake=false, AntiAFK=false }
-local alive = true
-local conns = {}
-local function bind(sig, fn) local c = sig:Connect(fn); conns[#conns+1] = c; return c end
-
-local COLLECT_RADIUS = 14      -- server grasp range
-local THIN_SPOT      = 10      -- fewer leaves than this in reach => roam
-local GRID_CELL      = 22      -- density grid cell (studs)
-local CELL_MIN       = {24, 10, 4}    -- cluster size passes, richest first
-local ROAM_STAGE     = {90, 170, 320} -- radius passes; short first so it works
-                                      -- the area it is in instead of criss-
-                                      -- crossing the map every hop
-local LOOP_TICK      = 0.40    -- unhurried: one collect pass every 0.4s
-local SETTLE         = 0.35    -- pause after every warp before doing anything
-local HOP_COOLDOWN   = 1.20    -- minimum seconds between roams
-local BAND_LO        = 8       -- studs below the dominant leaf layer
-local BAND_HI        = 10      -- studs above it
-local Y_BUCKET       = 4       -- leaf-height histogram resolution
-local GLIDE_SPEED    = 420     -- studs/sec while gliding between spots
-local GLIDE_MIN      = 0.08
-local GLIDE_MAX      = 0.35    -- never spend longer than this on one hop
-local STUCK_SECS     = 12      -- no leaves and no cash for this long => force roam
-                               -- (generous: a sell round trip alone costs ~2s)
-local CELL_COOLDOWN  = 8       -- don't re-target a cell we just farmed
-local DEAD_COOLDOWN  = 25      -- cell that banked nothing is benched this long
-local BATCH_MAX      = 100     -- leaves per collectMany call; a 512-leaf batch was
-                               -- destroyed client-side and credited nothing
-local DEPOSIT_BENCH  = 60      -- dumpster that refused to pay is benched this long
-
-local function char() return LP.Character end
-local function hrp() local c=char(); return c and c:FindFirstChild("HumanoidRootPart") end
-local function cashV() return LP:GetAttribute("Cash") or 0 end
-local function leavesV() return LP:GetAttribute("Leaves") or 0 end
-local function capV() return LP:GetAttribute("LeafCapacity") or 25 end
-local function infBag() return LP:GetAttribute("InfiniteBag") == true or LP:GetAttribute("PermInfiniteBag") == true end
-local function budgetV() local ok,b = pcall(function() return LeafSim.collectBudget() end); return (ok and type(b)=="number") and b or 0 end
-
--- bag fullness from the authoritative attributes, NOT from collectBudget:
--- the budget subtracts leaves still flying as FX and goes negative on an empty bag.
-local function bagFull()
-    if infBag() then return false end
-    local cap = capV()
-    if cap <= 0 or cap == math.huge then return false end
-    return leavesV() >= cap
-end
-local function roomLeft()
-    if infBag() then return BATCH_MAX end
-    local mult = LP:GetAttribute("LeafMult") or 1
-    local room = math.floor((capV() - leavesV()) / math.max(mult, 1))
-    local b = budgetV()
-    if b > 0 and b < room then room = b end
-    return math.max(room, 0)
-end
-
--- ground raycast: land on floor, never inside a roof or a prop
-local groundRP = RaycastParams.new()
-groundRP.FilterType = Enum.RaycastFilterType.Exclude
-groundRP.IgnoreWater = true
-local function groundPos(pos)
-    groundRP.FilterDescendantsInstances = { char(), LeafSim.folder }
-    -- start JUST above the leaf: starting high up catches the roof over an
-    -- indoor pile and lands us on top of the house with nothing in reach
-    local hit = Workspace:Raycast(pos + Vector3.new(0, 3, 0), Vector3.new(0, -40, 0), groundRP)
-    if hit and hit.Position.Y <= pos.Y + 3 then return hit.Position + Vector3.new(0, 3.5, 0) end
-    return nil
-end
--- leaves rest ON the floor, so a leaf position is always a usable landing spot
-local function landing(pos) return groundPos(pos) or (pos + Vector3.new(0, 3.5, 0)) end
-
-local function warp(pos)
-    local hp = hrp(); if not hp then return false end
-    hp.AssemblyLinearVelocity = Vector3.zero
-    hp.CFrame = CFrame.new(pos)
-    return true
-end
-
--- Softer travel: slide between spots over a few frames instead of snapping.
--- Ends on exactly the same stud as a hard warp, so every server range check
--- still passes - it just does not read as a teleport strobe.
-local function moveTo(pos)
-    local hp = hrp(); if not hp then return false end
-    if not S.Smooth then return warp(pos) end
-    local startCF = hp.CFrame
-    local target  = CFrame.new(pos)
-    local dist    = (pos - startCF.Position).Magnitude
-    if dist < 3 then return warp(pos) end
-    local dur = math.clamp(dist / GLIDE_SPEED, GLIDE_MIN, GLIDE_MAX)
-    local t0  = os.clock()
-    -- Anchor the root for the trip. Without it the character keeps its physics
-    -- while being dragged through geometry and drops under the map, which the
-    -- void guard then rescues with a hard 97-stud snap - the exact blink the
-    -- glide was meant to remove.
-    local wasAnchored = hp.Anchored
-    hp.Anchored = true
-    while alive do
-        local a = (os.clock() - t0) / dur
-        if a >= 1 then break end
-        hp.CFrame = startCF:Lerp(target, a)
-        RunS.Heartbeat:Wait()
-        local cur = hrp()
-        if not cur then return false end
-        if cur ~= hp then
-            pcall(function() hp.Anchored = wasAnchored end)
-            hp = cur
-            hp.Anchored = true
-        end
-    end
-    hp.CFrame = target
-    hp.Anchored = wasAnchored
-    hp.AssemblyLinearVelocity = Vector3.zero
-    return true
-end
-
--- ---------- deposit targets, richest dumpster first ----------
--- PricePerLeaf is an attribute on each dumpster model (0.01 / 0.02 / 0.03).
--- Zone-locked dumpsters simply pay nothing, so we verify each deposit and
--- bench a dumpster that refuses instead of assuming which zones are unlocked.
--- ---------- what map are we on ----------
--- Every map ships its own Workspace.Map.MapConfig (name="House", leafFloorY,
--- finalZone...). World 2 is a different map model with different geometry, so
--- anything cached from the last map has to be thrown away when it changes.
-local function mapName()
-    local mp = Workspace:FindFirstChild("Map")
-    if not mp then return "?" end
-    local mc = mp:FindFirstChild("MapConfig")
-    if mc and mc:IsA("ModuleScript") then
-        local ok, cfg = pcall(require, mc)
-        if ok and type(cfg) == "table" and cfg.name then return tostring(cfg.name) end
-    end
-    local ok, id = pcall(function() return mp:GetDebugId() end)
-    return ok and tostring(id) or "Map"
-end
-
-local dumps = nil
-local dumpsMap = nil
-
--- Found by the PricePerLeaf attribute rather than the Map.Dumpsters path, so a
--- map that parents its dumpsters somewhere else still works. Verified on House:
--- attribute scan finds the same 3 the hardcoded path did.
-local function dumpList()
-    local nowMap = mapName()
-    if dumps and dumpsMap == nowMap then return dumps end
-    dumps, dumpsMap = nil, nowMap
-
-    local found = {}
-    local df = Workspace:FindFirstChild("Map"); df = df and df:FindFirstChild("Dumpsters")
-    if df then
-        for _, d in ipairs(df:GetChildren()) do
-            if d:IsA("Model") then found[#found+1] = d end
-        end
-    end
-    if #found == 0 then
-        for _, v in ipairs(Workspace:GetDescendants()) do
-            if v:IsA("Model") and v:GetAttribute("PricePerLeaf") then found[#found+1] = v end
-        end
-    end
-    if #found == 0 then return nil end
-
-    local out = {}
-    for _, d in ipairs(found) do
-        do
-            -- the server measures range to the "Leaves" part when the model has one
-            local part = d:FindFirstChild("Leaves")
-            local pos
-            if part and part:IsA("BasePart") then pos = part.Position
-            else local ok, p = pcall(function() return d:GetPivot().Position end); pos = ok and p or nil end
-            if pos then
-                out[#out+1] = { model=d, pos=pos,
-                    price=tonumber(d:GetAttribute("PricePerLeaf")) or 0.01,
-                    rate=nil, samples=0, bench=0, fails=0 }
-            end
-        end
-    end
-    if #out == 0 then return nil end
-    table.sort(out, function(a,b) return a.price > b.price end)
-    dumps = out
-    return dumps
-end
-
--- A dumpster only pays if its ZoneRequired matches the player's CurrentZone,
--- and CurrentZone never changes while we teleport (measured: standing ON the
--- Farm dumpster with CurrentZone="None" paid nothing). So the zone-matched set
--- is the only one worth trying - the old build benched all three and then fell
--- back to a locked one forever, which is why it stopped depositing.
-local function usable(d)
-    local zr = d.model:GetAttribute("ZoneRequired")
-    return zr == nil or zr == "None" or zr == LP:GetAttribute("CurrentZone")
-end
-local function activeDump()
-    local list = dumpList(); if not list then return nil end
-    local now = os.clock()
-    local open, valid = {}, {}
-    for _, d in ipairs(list) do
-        if usable(d) then
-            valid[#valid+1] = d
-            if now >= d.bench then open[#open+1] = d end
-        end
-    end
-    if #valid == 0 then return list[1] end          -- nothing matches: try anyway
-    if #open == 0 then
-        for _, d in ipairs(valid) do d.bench = 0; d.fails = 0 end
-        open = valid
-    end
-    -- PricePerLeaf is only a prior (the 0.03 dumpster measured 0.012), so
-    -- sample each once, then keep the best measured cash-per-leaf.
-    for _, d in ipairs(open) do if d.samples == 0 then return d end end
-    local best = open[1]
-    for _, d in ipairs(open) do if (d.rate or 0) > (best.rate or 0) then best = d end end
-    return best
-end
-
--- ground level of the farm, taken from the dumpster we are actually using
-local function groundY()
-    local d = activeDump()
-    if d then return d.pos.Y end
-    local hp = hrp(); return hp and (hp.Position.Y - 3) or 62
-end
-
--- ---------- leaf helpers ----------
-local banked = 0        -- leaves credited this session (progress signal)
-local cellState = {}    -- cellKey -> { farmed=clock, dead=clock }
-local function cellKey(p) return math.floor(p.X/GRID_CELL)..","..math.floor(p.Z/GRID_CELL) end
-
--- returns leaves actually banked (collectMany's own count), and the candidates seen
-local function collectHere()
-    local hp = hrp(); if not hp then return 0, 0 end
-    local room = roomLeft()
-    if room <= 0 then return 0, 0 end
-    local budget = math.min(room, BATCH_MAX)
-    local pos = hp.Position
-    local near = {}
-    for _, leaf in ipairs(LeafSim.folder:GetChildren()) do
-        if leaf:IsA("BasePart") then
-            local d = (leaf.Position - pos).Magnitude
-            if d <= COLLECT_RADIUS then near[#near+1] = { part=leaf, d=d } end
-        end
-    end
-    if #near == 0 then return 0, 0 end
-    -- nearest first: if the batch is capped, spend it on the leaves in real grasp
-    table.sort(near, function(a,b) return a.d < b.d end)
-    local batch = {}
-    for i = 1, math.min(#near, budget) do batch[i] = near[i].part end
-    local ok, got = pcall(LeafSim.collectMany, batch)
-    got = (ok and type(got) == "number") and got or 0
-    -- got is the CLIENT's count. The server can still refuse the batch, so the
-    -- caller confirms against the Leaves attribute before trusting this spot.
-    return got, #batch
-end
-
-local function countNear(radius)
-    local hp = hrp(); if not hp then return 0 end
-    local pos = hp.Position
-    local n = 0
-    for _, leaf in ipairs(LeafSim.folder:GetChildren()) do
-        if leaf:IsA("BasePart") and (leaf.Position - pos).Magnitude <= radius then
-            n = n + 1
-            if n >= THIN_SPOT then return n end
-        end
-    end
-    return n
-end
-
--- Densest ground-band cluster. Widens through CELL_MIN x ROAM_STAGE and finally
--- falls back to the single nearest leaf, so this returns nil only when the map
--- really has no reachable leaf left.
--- The leaf floor is wherever the leaves actually are, which is map specific:
--- House piles 9.9k leaves at y~60 with a basement at 48-52, and world 2 sits
--- somewhere else entirely. Deriving the band from a height histogram instead of
--- from the dumpster's own Y makes it work on any map, and gives a real fallback
--- (the next densest layer) instead of dropping straight to "any height".
-local function leafLayers()
-    -- Reference height is the DUMPSTER's floor, not your feet. Scoring by your
-    -- own Y let the bot drift into the House basement layer (y 48-52), where
-    -- the floor is thin: it sank through, hit the void guard, and got snapped
-    -- back - the 97-stud blink that survived the first smooth build. A dumpster
-    -- always sits on the map's main floor, on any map.
-    local d = activeDump()
-    local hp = hrp()
-    local refY = (d and d.pos.Y) or (hp and (hp.Position.Y - 3)) or 0
-
-    local buckets = {}
-    for _, leaf in ipairs(LeafSim.folder:GetChildren()) do
-        if leaf:IsA("BasePart") then
-            local b = math.floor(leaf.Position.Y / Y_BUCKET) * Y_BUCKET
-            buckets[b] = (buckets[b] or 0) + 1
-        end
-    end
-    local out = {}
-    for y, n in pairs(buckets) do
-        -- big layers win; layers far from the shop floor lose hard
-        out[#out+1] = { y = y, n = n, score = n - math.abs(y - refY) * 40 }
-    end
-    table.sort(out, function(a, b) return a.score > b.score end)
-    return out
-end
-
-local function bestSpot()
-    local hp = hrp(); if not hp then return nil end
-    local dump = activeDump()
-    local anchor = dump and dump.pos or hp.Position
-    local now = os.clock()
-    local yLo, yHi = -math.huge, math.huge
-
-    -- one pass over the folder builds both grids: the ground-band grid we
-    -- prefer, and an unrestricted one used only when the ground band is bare
-    local function build(useBand)
-        local grid, nearest, nearestD = {}, nil, math.huge
-        for _, leaf in ipairs(LeafSim.folder:GetChildren()) do
-            if leaf:IsA("BasePart") then
-                local p = leaf.Position
-                if (not useBand) or (p.Y >= yLo and p.Y <= yHi) then
-                    local key = cellKey(p)
-                    local st = cellState[key]
-                    if not (st and st.dead and now - st.dead < DEAD_COOLDOWN) then
-                        local g = grid[key]
-                        if not g then g = { n=0, x=0, y=p.Y, z=0, key=key, anchorD=(p-anchor).Magnitude }; grid[key] = g end
-                        g.n = g.n + 1; g.x = g.x + p.X; g.z = g.z + p.Z
-                        if p.Y < g.y then g.y = p.Y end     -- lowest leaf = the floor of the pile
-                        local d = (p - hp.Position).Magnitude
-                        if d < nearestD and d > 4 then nearestD = d; nearest = p end
-                    end
-                end
-            end
-        end
-        return grid, nearest
-    end
-
-    local function pickFrom(grid)
-        for _, minN in ipairs(CELL_MIN) do
-            for _, radius in ipairs(ROAM_STAGE) do
-                local cells = {}
-                for key, g in pairs(grid) do
-                    if g.n >= minN and g.anchorD <= radius then
-                        local cx, cz = g.x/g.n, g.z/g.n
-                        local center = Vector3.new(cx, g.y, cz)
-                        local st = cellState[key]
-                        local recent = (st and st.farmed and now - st.farmed < CELL_COOLDOWN) and -1e6 or 0
-                        cells[#cells+1] = {
-                            key = key, center = center,
-                            -- distance weighted hard: work the pile you are
-                            -- standing in before crossing the map
-                            score = g.n - (center - hp.Position).Magnitude * 0.25 + recent,
-                        }
-                    end
-                end
-                table.sort(cells, function(a,b) return a.score > b.score end)
-                for i = 1, math.min(6, #cells) do
-                    -- groundPos, not landing(): landing() falls back to the leaf's
-                    -- own height when the downward ray finds no floor, which drops
-                    -- us into a gap and costs a void-guard snap. A cell we cannot
-                    -- confirm a floor under is simply skipped.
-                    local land = groundPos(cells[i].center)
-                    -- reject a landing that sits above the pile: that is a roof
-                    -- over an indoor cluster, and we would arrive with 0 in reach
-                    if land and land.Y <= cells[i].center.Y + 8 then
-                        cellState[cells[i].key] = cellState[cells[i].key] or {}
-                        cellState[cells[i].key].farmed = now
-                        return land, cells[i].key
-                    end
-                end
-            end
-        end
-        return nil
-    end
-
-    -- try the densest leaf layers in turn, best first
-    local layers = leafLayers()
-    local anyNearest = nil
-    for i = 1, math.min(3, #layers) do
-        yLo, yHi = layers[i].y - BAND_LO, layers[i].y + BAND_HI
-        local grid, nearest = build(true)
-        anyNearest = anyNearest or nearest
-        local land, key = pickFrom(grid)
-        if land then return land, key end
-    end
-
-    -- every layer exhausted (map farmed down) -> allow any height
-    yLo, yHi = -math.huge, math.huge
-    local grid2, nearest2 = build(false)
-    local land, key = pickFrom(grid2)
-    if land then return land, key end
-
-    local fallback = anyNearest or nearest2
-    if fallback then return landing(fallback), cellKey(fallback) end
-    return nil
-end
-
--- ---------- deposit, verified ----------
--- Measured on the live server: EmptyBackpack pays at 20 studs and refuses at 24,
--- so the sell CANNOT be fired from the farm spot. The server also ignores it
--- until the new position has replicated - and how long that takes varies per
--- server (one paid after 8 frames, another needed a settle before the fire and
--- ignored a 10-frame blink entirely). So: hop, let it settle, fire, hold, then
--- restore the exact CFrame we were farming from. The settle/hold that worked is
--- remembered, so only the first sell of a session pays the discovery cost.
-local SELL_SETTLE, SELL_HOLD = 0.35, 20
-local SELL_LADDER = { {0.35,20}, {0.60,45}, {1.00,90} }
-local function deposit()
-    local before = leavesV()
-    if before <= 0 then return true end
-    local d = activeDump()
-    if not d then return false end
-    local hp = hrp(); if not hp then return false end
-
-    local cashBefore = cashV()
-    local home = hp.CFrame
-    local target = CFrame.new(landing(d.pos))
-    local paid = false
-
-    local ladder = { {SELL_SETTLE, SELL_HOLD} }
-    for _, step in ipairs(SELL_LADDER) do
-        if step[2] > SELL_HOLD then ladder[#ladder+1] = step end
-    end
-
-    for _, step in ipairs(ladder) do
-        local settle, hold = step[1], step[2]
-        -- glide to the dumpster instead of blinking; the travel time counts
-        -- toward the settle the server needs anyway
-        moveTo(target.Position)
-        hp = hrp(); if not hp then return false end
-        hp.AssemblyLinearVelocity = Vector3.zero
-        hp.CFrame = target
-        task.wait(settle)                       -- let the server see us arrive
-        hp.CFrame = target                      -- hold the spot against physics
-        pcall(function() EmptyBackpack:FireServer() end)
-        for _ = 1, hold do RunS.Heartbeat:Wait() end
-        moveTo(home.Position)                   -- glide back to the farm spot
-        hp = hrp(); if not hp then return false end
-        hp.CFrame = home
-        hp.AssemblyLinearVelocity = Vector3.zero
-
-        for _ = 1, 10 do                        -- ~1s for the credit to land
-            task.wait(0.10)
-            if leavesV() < before then paid = true; break end
-        end
-        if paid then
-            SELL_SETTLE, SELL_HOLD = settle, hold   -- this server's timing, kept
-            break
-        end
-    end
-
-    hp.CFrame = home
-    if paid then
-        d.fails = 0
-        task.wait(0.15)                         -- let the cash tick land before measuring
-        local rate = (cashV() - cashBefore) / math.max(before - leavesV(), 1)
-        d.rate = d.rate and (d.rate * 0.5 + rate * 0.5) or rate
-        d.samples = d.samples + 1
-        if d.rate <= 0 then d.bench = os.clock() + DEPOSIT_BENCH end
-        return true
-    end
-
-    -- refused (zone-locked dumpster): bench it, the next one gets the bag
-    d.fails = d.fails + 1
-    if d.fails >= 2 then
-        d.bench = os.clock() + DEPOSIT_BENCH
-        d.fails = 0
-        d.samples = math.max(d.samples, 1)
-    end
-    return false
-end
-
--- ---------- auto buy upgrade ----------
-local function ownsTool(tk)
-    if not UpgradeConf or not UpgradeConf.tools or not UpgradeConf.tools[tk] then return true end
-    local oa = UpgradeConf.tools[tk].ownsAttr
-    return oa == nil or LP:GetAttribute(oa) == true
-end
-local function cheapestUpgrade()
-    if not UpgradeConf or not UpgradeConf.tools then return nil end
-    local money, best = cashV(), nil
-    for tk, tool in pairs(UpgradeConf.tools) do
-        if ownsTool(tk) and type(tool.upgrades) == "table" then
-            for un, u in pairs(tool.upgrades) do
-                local lvl = LP:GetAttribute("Upg_"..tk.."_"..un) or 0
-                if type(u) == "table" and u.max and lvl < u.max and u.prices then
-                    local price = u.prices[lvl+1]
-                    if type(price) == "number" and price <= money and (not best or price < best.price) then
-                        best = { tk=tk, un=un, price=price }
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
-
--- ---------- roam bookkeeping ----------
-local spotKey = nil
-local function markDead(key)
-    if not key then return end
-    local st = cellState[key] or {}
-    st.dead = os.clock()
-    cellState[key] = st
-end
--- warp to a bestSpot() result, remembering which cell we committed to
-local lastHop = 0
-local function goTo(pos, key)
-    if not pos then return false end
-    moveTo(pos)
-    spotKey = key
-    lastHop = os.clock()
-    task.wait(SETTLE)          -- land, let the server see us, then collect
-    return true
-end
-local function hopReady() return os.clock() - lastHop >= HOP_COOLDOWN end
-
--- ---------- state / stats ----------
-local mode = "Sẵn sàng"
-local cashStart, leafStart, startClock = cashV(), 0, os.clock()
-local emptyStreak = 0
-
--- ================= FARM LOOP =================
-local lastCash, lastProgress = cashV(), os.clock()
-local prevLeaves = leavesV()
-local pendingSince = nil
-local lastMap = nil
-task.spawn(function()
-    while alive do
-        local okLoop, err = pcall(function()
-            if not S.Farm then
-                mode = "Sẵn sàng"; lastProgress = os.clock(); emptyStreak = 0
-                return
-            end
-            local hp = hrp()
-            if not hp then mode = "Không tìm thấy nhân vật"; lastProgress = os.clock(); return end
-
-            -- moved to another map (world 2): drop every cached assumption
-            local nowMap = mapName()
-            if lastMap and nowMap ~= lastMap then
-                dumps, dumpsMap = nil, nil
-                cellState = {}
-                SELL_SETTLE, SELL_HOLD = 0.35, 20
-                lastProgress = os.clock()
-                mode = "Phát hiện map mới"
-            end
-            lastMap = nowMap
-
-            local gy = groundY()
-
-            -- void guard: fell through the map / into the fall sequence
-            if hp.Position.Y < gy - 25 then
-                mode = "Đang khôi phục"
-                local d = activeDump()
-                if d then warp(landing(d.pos)) end
-                task.wait(0.20)
-                lastProgress = os.clock()
-                return
-            end
-
-            -- Progress = leaves the SERVER credited, or cash. Deposits are rare
-            -- on a 500 bag, so cash alone would trip the watchdog mid-collect.
-            local money = cashV()
-            if money > lastCash then lastCash = money; lastProgress = os.clock() end
-            local lv = leavesV()
-            if lv > prevLeaves then
-                banked = banked + (lv - prevLeaves)
-                lastProgress = os.clock()
-                pendingSince = nil
-                emptyStreak = 0
-            end
-            prevLeaves = lv
-
-            -- sent a batch but the bag never grew => server refused this spot
-            if pendingSince and os.clock() - pendingSince > 1.6 then
-                pendingSince = nil
-                markDead(spotKey or cellKey(hp.Position))
-                markDead(cellKey(hp.Position))
-                goTo(bestSpot())
-                return
-            end
-
-            -- Leaves spawn once per zone per server (Leave_Locations, with a
-            -- Completed attribute per zone) - they do NOT respawn. A drained
-            -- server means rejoin, so idle quietly instead of warping forever.
-            if #LeafSim.folder:GetChildren() == 0 then
-                mode = "Khu vực hết lá"
-                if leavesV() > 0 then
-                    deposit(); pendingSince = nil; prevLeaves = leavesV()
-                end
-                task.wait(1.0)
-                lastProgress = os.clock()
-                return
-            end
-
-            if bagFull() then
-                mode = "Đang bán lá"
-                deposit()
-                pendingSince = nil
-                prevLeaves = leavesV()
-                task.wait(0.10)
-                goTo(bestSpot())
-                lastProgress = os.clock()
-                return
-            end
-
-            -- stalled: NOT back to the dumpster (that is the empty spot we keep
-            -- landing in) - bank whatever is in the bag, then take a fresh cluster.
-            if os.clock() - lastProgress > STUCK_SECS then
-                mode = "Đang xử lý kẹt"
-                if leavesV() > 0 then
-                    deposit()
-                    pendingSince = nil
-                    prevLeaves = leavesV()
-                end
-                for k, st in pairs(cellState) do st.farmed = nil end
-                markDead(spotKey)
-                if not goTo(bestSpot()) then
-                    local d = activeDump(); if d then warp(landing(d.pos)) end
-                end
-                task.wait(0.20)
-                emptyStreak = 0
-                lastProgress = os.clock()
-                return
-            end
-
-            mode = "Đang nhặt lá"
-            local got, tried = collectHere()
-            if got > 0 and not pendingSince then
-                pendingSince = os.clock()       -- armed; cleared when the bag grows
-            end
-
-            -- Arrived with nothing in grasp: bad landing or a stripped cell.
-            -- Bench it so bestSpot stops handing it back.
-            if tried == 0 then
-                emptyStreak = emptyStreak + 1
-                if emptyStreak >= 2 then
-                    markDead(spotKey or cellKey(hp.Position))
-                    markDead(cellKey(hp.Position))
-                    goTo(bestSpot())
-                    emptyStreak = 0
-                    return
-                end
-            end
-
-            -- thinned out => next cluster, but never more often than HOP_COOLDOWN
-            if countNear(COLLECT_RADIUS + 6) < THIN_SPOT and hopReady() then
-                mode = "Đang tìm khu vực mới"
-                goTo(bestSpot())
-            end
-        end)
-        if not okLoop then mode = "Lỗi"; warn("[ZYNTRIX LEAF] "..tostring(err)) end
-        task.wait(LOOP_TICK)
-    end
+pcall(function()
+    local old = CoreGui:FindFirstChild(GUI_NAME)
+    if old then old:Destroy() end
 end)
 
--- ================= BUY LOOP =================
-task.spawn(function()
-    while alive do
+pcall(function()
+    local old = LP:WaitForChild("PlayerGui"):FindFirstChild(GUI_NAME)
+    if old then old:Destroy() end
+end)
+
+--============================================================--
+-- HELPERS
+--============================================================--
+
+local function New(class, props, parent)
+    local obj = Instance.new(class)
+
+    for k,v in pairs(props or {}) do
         pcall(function()
-            if S.BuyRake and BuyToolCash and LP:GetAttribute("OwnsRake") ~= true and cashV() >= 1 then
-                BuyToolCash:FireServer("Rake")
-            end
-            if S.BuyBag and BuyBagUpgrade then
-                BuyBagUpgrade:FireServer()   -- server ignores if maxed/unaffordable
-            end
-            if S.BuyUpg then
-                local up = cheapestUpgrade()
-                if up then BuyUpgrade:FireServer(up.tk, up.un) end
-            end
+            obj[k] = v
         end)
-        task.wait(1.0)
     end
-end)
 
--- ---------- anti afk ----------
-local VirtualUser = game:GetService("VirtualUser")
-bind(LP.Idled, function()
-    if S.AntiAFK then
-        pcall(function() VirtualUser:CaptureController(); VirtualUser:ClickButton2(Vector2.new()) end)
+    if parent then
+        obj.Parent = parent
     end
-end)
 
--- ---------- GUI ----------
-local hui = (typeof(gethui)=="function") and gethui() or game:GetService("CoreGui")
-local sg = Instance.new("ScreenGui"); sg.ResetOnSpawn=false; sg.IgnoreGuiInset=true; sg.Parent=hui
-local m = Instance.new("Frame"); m.Size=UDim2.fromOffset(286,392); m.Position=UDim2.fromOffset(40,70)
-m.BackgroundColor3=Color3.fromRGB(20,22,18); m.BorderSizePixel=0; m.Active=true; m.Parent=sg
-Instance.new("UICorner",m).CornerRadius=UDim.new(0,10)
-local sk=Instance.new("UIStroke",m); sk.Color=GD; sk.Thickness=1.5
-local bar=Instance.new("Frame"); bar.Size=UDim2.new(1,0,0,32); bar.BackgroundColor3=Color3.fromRGB(30,34,24); bar.BorderSizePixel=0; bar.Parent=m
-Instance.new("UICorner",bar).CornerRadius=UDim.new(0,10)
-local tt=Instance.new("TextLabel"); tt.Size=UDim2.new(1,-12,1,0); tt.Position=UDim2.fromOffset(12,0)
-tt.BackgroundTransparency=1; tt.Font=Enum.Font.GothamBold; tt.TextSize=14; tt.TextColor3=GD
-tt.TextXAlignment=Enum.TextXAlignment.Left; tt.Text="ZYNTRIX - LEAF AUTOFARM"; tt.Parent=bar
-
-local scroll=Instance.new("ScrollingFrame"); scroll.Size=UDim2.new(1,-16,1,-44); scroll.Position=UDim2.fromOffset(8,38)
-scroll.BackgroundTransparency=1; scroll.BorderSizePixel=0; scroll.ScrollBarThickness=4; scroll.ScrollBarImageColor3=GD
-scroll.CanvasSize=UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize=Enum.AutomaticSize.Y; scroll.Parent=m
-local ly=Instance.new("UIListLayout",scroll); ly.Padding=UDim.new(0,5)
-local od=0
-
-od=od+1
-local stat=Instance.new("TextLabel"); stat.Size=UDim2.new(1,0,0,58); stat.BackgroundColor3=Color3.fromRGB(28,30,24)
-stat.BorderSizePixel=0; stat.Font=Enum.Font.Gotham; stat.TextSize=11; stat.TextColor3=W
-stat.TextXAlignment=Enum.TextXAlignment.Left; stat.TextYAlignment=Enum.TextYAlignment.Center
-stat.LayoutOrder=od; stat.Text="  Sẵn sàng"; stat.Parent=scroll
-Instance.new("UICorner",stat).CornerRadius=UDim.new(0,6)
-Instance.new("UIPadding",stat).PaddingLeft=UDim.new(0,8)
-
-local function section(txt)
-    od=od+1
-    local l=Instance.new("TextLabel"); l.Size=UDim2.new(1,0,0,18); l.BackgroundTransparency=1
-    l.Font=Enum.Font.GothamBold; l.TextSize=11; l.TextColor3=Color3.fromRGB(140,150,120)
-    l.TextXAlignment=Enum.TextXAlignment.Left; l.Text=txt:upper(); l.LayoutOrder=od; l.Parent=scroll
+    return obj
 end
 
-local function tg(key, txt, hint)
-    od=od+1
-    local h=Instance.new("Frame"); h.Size=UDim2.new(1,0,0,38); h.BackgroundColor3=Color3.fromRGB(28,30,24)
-    h.BorderSizePixel=0; h.LayoutOrder=od; h.Parent=scroll
-    Instance.new("UICorner",h).CornerRadius=UDim.new(0,6)
-    local b=Instance.new("TextButton"); b.Size=UDim2.new(1,-30,0,22); b.Position=UDim2.fromOffset(10,2)
-    b.BackgroundTransparency=1; b.Font=Enum.Font.GothamBold; b.TextSize=13; b.TextColor3=W
-    b.TextXAlignment=Enum.TextXAlignment.Left; b.Text=txt; b.Parent=h
-    local dt=Instance.new("Frame"); dt.Size=UDim2.fromOffset(11,11); dt.Position=UDim2.new(1,-22,0,6)
-    dt.BorderSizePixel=0; dt.Parent=h; Instance.new("UICorner",dt).CornerRadius=UDim.new(1,0)
-    local hl=Instance.new("TextLabel"); hl.Size=UDim2.new(1,-16,0,12); hl.Position=UDim2.fromOffset(10,23)
-    hl.BackgroundTransparency=1; hl.Font=Enum.Font.Gotham; hl.TextSize=10; hl.TextColor3=Color3.fromRGB(140,140,130)
-    hl.TextXAlignment=Enum.TextXAlignment.Left; hl.Text=hint; hl.Parent=h
-    local function pt() dt.BackgroundColor3 = S[key] and G or R end
-    pt()
-    b.MouseButton1Click:Connect(function()
-        S[key] = not S[key]; pt()
-        if key=="Farm" and S.Farm then
-            cashStart=cashV(); leafStart=banked; startClock=os.clock()
-            lastProgress=os.clock(); cellState={}
-            for _, d in ipairs(dumpList() or {}) do d.bench=0; d.fails=0 end
+local function Corner(obj, radius)
+    New("UICorner", {
+        CornerRadius = UDim.new(0, radius or 8)
+    }, obj)
+end
+
+local function Stroke(obj, color, thickness, transparency)
+    return New("UIStroke", {
+        Color = color or PURPLE,
+        Thickness = thickness or 1,
+        Transparency = transparency or 0
+    }, obj)
+end
+
+local function Tween(obj, time, props)
+    local t = TweenService:Create(
+        obj,
+        TweenInfo.new(time, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        props
+    )
+    t:Play()
+    return t
+end
+
+local function SafeSet(obj, property, value)
+    pcall(function()
+        obj[property] = value
+    end)
+end
+
+local function SetText(obj, text)
+    if obj and obj:IsA("TextLabel") or obj and obj:IsA("TextButton") or obj and obj:IsA("TextBox") then
+        obj.Text = tostring(text)
+    end
+end
+
+local function CopyText(text)
+    pcall(function()
+        if setclipboard then
+            setclipboard(tostring(text))
+        elseif toclipboard then
+            toclipboard(tostring(text))
+        elseif Clipboard then
+            Clipboard(tostring(text))
         end
     end)
 end
 
-local function btn(txt, fn)
-    od=od+1
-    local b=Instance.new("TextButton"); b.Size=UDim2.new(1,0,0,26); b.BackgroundColor3=Color3.fromRGB(34,38,28)
-    b.BorderSizePixel=0; b.Font=Enum.Font.GothamBold; b.TextSize=12; b.TextColor3=W
-    b.Text=txt; b.LayoutOrder=od; b.Parent=scroll
-    Instance.new("UICorner",b).CornerRadius=UDim.new(0,6)
-    b.MouseButton1Click:Connect(function() pcall(fn, b) end)
+--============================================================--
+-- SCREEN GUI
+--============================================================--
+
+local GUI = New("ScreenGui", {
+    Name = GUI_NAME,
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+}, CoreGui)
+
+--============================================================--
+-- MAIN
+--============================================================--
+
+local Main = New("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(620,370),
+    Position = UDim2.new(0.5,-310,0.5,-185),
+    BackgroundColor3 = BG,
+    BackgroundTransparency = .04,
+    BorderSizePixel = 0
+}, GUI)
+
+Corner(Main,14)
+Stroke(Main,PURPLE,1.7,0)
+
+local Glow = Stroke(Main,BLUE,5,.82)
+
+--============================================================--
+-- TOP BAR
+--============================================================--
+
+local TopBar = New("Frame", {
+    Size = UDim2.new(1,0,0,55),
+    BackgroundTransparency = 1
+}, Main)
+
+local Logo = New("ImageLabel", {
+    Size = UDim2.fromOffset(38,38),
+    Position = UDim2.fromOffset(12,9),
+    BackgroundColor3 = CARD2,
+    BackgroundTransparency = .1,
+    Image = LOGO_ID,
+    ScaleType = Enum.ScaleType.Fit
+}, TopBar)
+
+Corner(Logo,9)
+Stroke(Logo,PURPLE,1.5)
+
+local Title = New("TextLabel", {
+    Size = UDim2.new(0,300,0,25),
+    Position = UDim2.fromOffset(60,7),
+    BackgroundTransparency = 1,
+    Text = "ZYNTRIX VIP PRIME",
+    Font = Enum.Font.GothamBold,
+    TextSize = 17,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = WHITE
+}, TopBar)
+
+local TitleGradient = New("UIGradient", {
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0,WHITE),
+        ColorSequenceKeypoint.new(.25,PURPLE),
+        ColorSequenceKeypoint.new(.5,BLUE),
+        ColorSequenceKeypoint.new(.75,CYAN),
+        ColorSequenceKeypoint.new(1,PURPLE)
+    })
+}, Title)
+
+local Subtitle = New("TextLabel", {
+    Size = UDim2.new(0,300,0,18),
+    Position = UDim2.fromOffset(61,31),
+    BackgroundTransparency = 1,
+    Text = "PREMIUM CONTROL PANEL • PRIME",
+    Font = Enum.Font.Gotham,
+    TextSize = 9,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = GRAY
+}, TopBar)
+
+local MinButton = New("TextButton", {
+    Size = UDim2.fromOffset(32,30),
+    Position = UDim2.new(1,-75,0,12),
+    BackgroundColor3 = CARD2,
+    Text = "−",
+    Font = Enum.Font.GothamBold,
+    TextSize = 18,
+    TextColor3 = WHITE,
+    AutoButtonColor = false
+}, TopBar)
+
+Corner(MinButton,8)
+Stroke(MinButton,PURPLE,1)
+
+local CloseButton = New("TextButton", {
+    Size = UDim2.fromOffset(32,30),
+    Position = UDim2.new(1,-38,0,12),
+    BackgroundColor3 = CARD2,
+    Text = "×",
+    Font = Enum.Font.GothamBold,
+    TextSize = 19,
+    TextColor3 = RED,
+    AutoButtonColor = false
+}, TopBar)
+
+Corner(CloseButton,8)
+Stroke(CloseButton,RED,1)
+
+--============================================================--
+-- DRAG
+--============================================================--
+
+local dragging = false
+local dragStart
+local startPos
+
+TopBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = true
+        dragStart = input.Position
+        startPos = Main.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+
+        local delta = input.Position - dragStart
+
+        Main.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+--============================================================--
+-- SIDEBAR
+--============================================================--
+
+local Sidebar = New("Frame", {
+    Size = UDim2.fromOffset(145,295),
+    Position = UDim2.fromOffset(10,62),
+    BackgroundColor3 = CARD,
+    BackgroundTransparency = .15,
+    BorderSizePixel = 0
+}, Main)
+
+Corner(Sidebar,11)
+Stroke(Sidebar,PURPLE2,1,.25)
+
+local SideLayout = New("UIListLayout", {
+    Padding = UDim.new(0,7),
+    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+    VerticalAlignment = Enum.VerticalAlignment.Top
+}, Sidebar)
+
+New("UIPadding", {
+    PaddingTop = UDim.new(0,8)
+}, Sidebar)
+
+local CurrentTab = "ANIMATION"
+local SideButtons = {}
+
+local function MakeSideButton(name, icon)
+    local b = New("TextButton", {
+        Size = UDim2.fromOffset(129,43),
+        BackgroundColor3 = CARD2,
+        BackgroundTransparency = .25,
+        BorderSizePixel = 0,
+        Text = icon.."  "..name,
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextColor3 = GRAY,
+        AutoButtonColor = false
+    }, Sidebar)
+
+    Corner(b,8)
+    Stroke(b,PURPLE2,1,.5)
+
+    SideButtons[name] = b
     return b
 end
 
-section("Farming")
-tg("Farm", "Tự Động Nhặt Lá", "collect + deposit + roam, all in one")
-tg("Smooth", "Di Chuyển Mượt", "glides between spots instead of blinking")
-btn("Tốc Độ Di Chuyển  -   (" .. GLIDE_SPEED .. ")", function(b)
-    GLIDE_SPEED = math.max(120, GLIDE_SPEED - 60)
-    b.Text = "Tốc Độ Di Chuyển  -   (" .. GLIDE_SPEED .. ")"
-end)
-btn("Tốc Độ Di Chuyển  +   (" .. GLIDE_SPEED .. ")", function(b)
-    GLIDE_SPEED = math.min(900, GLIDE_SPEED + 60)
-    b.Text = "Tốc Độ Di Chuyển  +   (" .. GLIDE_SPEED .. ")"
-end)
+local AnimationTab = MakeSideButton("ANIMATION","✦")
+local EmoteTab = MakeSideButton("EMOTE","♫")
+local ItemsTab = MakeSideButton("ITEMS","◆")
+local GamesTab = MakeSideButton("GAMES","◈")
+local SettingsTab = MakeSideButton("SETTINGS","⚙")
 
-section("Auto Buy")
-tg("BuyUpg", "Tự Mua Nâng Cấp", "cheapest affordable upgrade")
-tg("BuyBag", "Tự Mua Túi", "bigger bag = fewer trips")
-tg("BuyRake", "Tự Mua Cào", "buys the Rake tool when affordable")
+--============================================================--
+-- CONTENT
+--============================================================--
 
-section("Misc")
-tg("AntiAFK", "Chống AFK", "never get kicked for idling")
+local Content = New("Frame", {
+    Size = UDim2.fromOffset(445,295),
+    Position = UDim2.fromOffset(165,62),
+    BackgroundTransparency = 1
+}, Main)
 
-do
-    od=od+1
-    local DISCORD="https://discord.gg/SgBZtPnTkd"
-    local b=Instance.new("TextButton"); b.Size=UDim2.new(1,0,0,28); b.BackgroundColor3=Color3.fromRGB(38,42,70)
-    b.BorderSizePixel=0; b.Font=Enum.Font.GothamBold; b.TextSize=13; b.TextColor3=Color3.fromRGB(150,175,255)
-    b.Text="Discord - Copy Invite"; b.LayoutOrder=od; b.Parent=scroll
-    Instance.new("UICorner",b).CornerRadius=UDim.new(0,6)
-    b.MouseButton1Click:Connect(function()
-        local copy=(setclipboard) or (toclipboard) or (writeclipboard) or (syn and syn.write_clipboard)
-        local ok=copy~=nil and pcall(copy,DISCORD)
-        b.Text=ok and "Copied! discord.gg/SgBZtPnTkd" or "discord.gg/SgBZtPnTkd"
-        task.delay(2.5,function() if b and b.Parent then b.Text="Discord - Copy Invite" end end)
+--============================================================--
+-- ANIMATION DATA
+--============================================================--
+
+local PACKS = {
+
+["Adidas Aura"]={
+Walk=83842218823011,Run=118320322718866,Jump=109996626521204,
+Fall=95603166884636,Climb=97824616490448,Swim=134530128383903,
+SwimIdle=94922130551805,Idle1=110211186840347,Idle2=114191137265065},
+
+["Adidas Community"]={
+Walk=122150855457006,Run=82598234841035,Jump=75290611992385,
+Fall=98600215928904,Climb=88763136693023,Swim=133308483266208,
+SwimIdle=109346520324160,Idle1=122257458498464,Idle2=102357151005774},
+
+["Adidas Sports"]={
+Walk=18537392113,Run=18537384940,Jump=18537380791,
+Fall=18537367238,Climb=18537363391,Swim=18537389531,
+SwimIdle=18537387180,Idle1=18537376492,Idle2=18537371272},
+
+["Astronaut"]={
+Walk=10921046031,Run=10921039308,Jump=10921042494,
+Fall=10921040576,Climb=10921032124,Swim=10921044000,
+SwimIdle=10921045006,Idle1=10921034824,Idle2=10921036806},
+
+["Bubbly"]={
+Walk=910034870,Run=910025107,Jump=910016857,
+Fall=910001910,Climb=909997997,Swim=910028158,
+SwimIdle=910030921,Idle1=910004836,Idle2=910009958},
+
+["Cartoon"]={
+Walk=742640026,Run=742638842,Jump=742637942,
+Fall=742637151,Climb=742636889,Swim=742639220,
+SwimIdle=742639812,Idle1=742637544,Idle2=742638445},
+
+["Catwalk Glam"]={
+Walk=109168724482748,Run=81024476153754,Jump=116936326516985,
+Fall=92294537340807,Climb=119377220967554,Swim=134591743181628,
+SwimIdle=98854111361360,Idle1=133806214992291,Idle2=94970088341563},
+
+["Elder"]={
+Walk=10921111375,Run=10921104374,Jump=10921107367,
+Fall=10921105765,Climb=10921100400,Swim=10921108971,
+SwimIdle=10921110146,Idle1=10921101664,Idle2=10921102574},
+
+["Levitation"]={
+Walk=616013216,Run=616010382,Jump=616008936,
+Fall=616005863,Climb=616003713,Swim=616011509,
+SwimIdle=616012453,Idle1=616006778,Idle2=616008087},
+
+["Mage"]={
+Walk=10921152678,Run=10921148209,Jump=10921149743,
+Fall=10921148939,Climb=10921143404,Swim=10921150788,
+SwimIdle=10921151661,Idle1=10921144709,Idle2=10921145797},
+
+["Ninja"]={
+Walk=10921162768,Run=10921157929,Jump=10921160088,
+Fall=10921159222,Climb=10921154678,Swim=10921161002,
+SwimIdle=10922757002,Idle1=10921155160,Idle2=10921155867},
+
+["Oldschool"]={
+Walk=10921244891,Run=10921240218,Jump=10921242013,
+Fall=10921241244,Climb=10921229866,Swim=10921243048,
+SwimIdle=10921244018,Idle1=10921230744,Idle2=10921232093},
+
+["Robot"]={
+Walk=10921255446,Run=10921250460,Jump=10921252123,
+Fall=10921251156,Climb=10921247141,Swim=10921253767,
+SwimIdle=10921253767,Idle1=10921248039,Idle2=10921248831},
+
+["Stylish"]={
+Walk=10921276116,Run=10921283326,Jump=10921279832,
+Fall=10921278648,Climb=10921271391,Swim=10921273958,
+SwimIdle=10921272275,Idle1=10921278648,Idle2=10921279832},
+
+["Superhero"]={
+Walk=10921298616,Run=10921291831,Jump=10921294559,
+Fall=10921293373,Climb=10921286911,Swim=10921295495,
+SwimIdle=10921297391,Idle1=10921288909,Idle2=10921290167},
+
+["Toy"]={
+Walk=10921312010,Run=10921306285,Jump=10921308158,
+Fall=10921307241,Climb=10921300839,Swim=10921309319,
+SwimIdle=10921310341,Idle1=10921301576,Idle2=10921302207},
+
+["Vampire"]={
+Walk=10921326949,Run=10921320299,Jump=10921322186,
+Fall=10921321317,Climb=10921314188,Swim=10921324408,
+SwimIdle=10921325443,Idle1=10921315373},
+
+["Werewolf"]={
+Walk=10921342074,Run=10921336997,Jump=10921338912,
+Fall=10921337907,Climb=10921329322,Swim=10921340419,
+SwimIdle=10921341319,Idle1=10921330408,Idle2=10921333667},
+
+["Zombie"]={
+Walk=10921355261,Run=616163682,Jump=10921351278,
+Fall=10921350320,Climb=10921343576,Swim=10921352344,
+SwimIdle=10921353442,Idle1=10921344533,Idle2=10921345304},
+
+["NFL"]={
+Walk=110358958299415,Run=117333533048078,Jump=119846112151352,
+Fall=129773241321032,Climb=134630013742019,Swim=132697394189921,
+SwimIdle=79090109939093,Idle1=92080889861410,Idle2=74451233229259},
+
+["No Boundaries"]={
+Walk=18747074203,Run=18747070484,Jump=18747069148,
+Fall=18747062535,Climb=18747060903,Swim=18747073181,
+SwimIdle=18747071682,Idle1=18747067405,Idle2=18747063918},
+
+["Amazon Unboxed"]={
+Walk=90478085024465,Run=134824450619865,Jump=121454505477205,
+Fall=94788218468396,Climb=121145883950231,Swim=105962919001086,
+SwimIdle=129126268464847,Idle1=98281136301627},
+
+["Wicked Popular"]={
+Walk=92072849924640,Run=72301599441680,Jump=104325245285198,
+Fall=121152442762481,Climb=131326830509784,Swim=99384245425157,
+SwimIdle=113199415118199,Idle1=118832222982049,Idle2=76049494037641},
+
+['Wicked "Dancing Through Life"']={
+Walk=73718308412641,Run=135515454877967,Jump=78508480717326,
+Fall=78147885297412,Climb=129447497744818,Swim=110657013921774,
+SwimIdle=129183123083281,Idle1=92849173543269,Idle2=132238900951109},
+
+["Glitch Animation Pack Roblox"]={
+Walk=70532084598346,Run=133291236719695,Jump=87784517289295,
+Fall=88817521039352,Climb=99974229390885,Swim=70788156947773,
+SwimIdle=124314548544388,Idle1=118195246541519},
+
+["Cute Roblox"]={
+Walk=140409718187215,Run=118375157537412,Jump=132381016103721,
+Fall=77496925287217,Climb=86318575131600,Swim=95599821412670,
+SwimIdle=132170981486619,Idle1=85735421117197,Idle2=136463789054516},
+
+["Furry Animation Pack Roblox"]={
+Walk=104011441852459,Run=87770060317862,Jump=102635582722041,
+Fall=137079985547592,Climb=76660530164497,Swim=99909547692332,
+SwimIdle=82429732905677,Idle1=111821292044705,Idle2=90705157329932},
+
+["Gói hoạt hình cổ tích"]={
+Bundle=107350693632269,
+Walk=104155388409994,Run=85214521829644,
+Idle1=117086336235203,Idle2=126081566479327,
+Swim=81730236977194,SwimIdle=129566463958031,
+Climb=92601441790709,Jump=101319668376661,Fall=78205337706161},
+
+["Gói hoạt hình kiếm kép"]={
+Bundle=122770822556243,
+Walk=133373623053068,Run=126476138839957,
+Idle1=81578950337746,Idle2=112871358653281,
+Swim=87435870674395,SwimIdle=90091920351380,
+Climb=139966022555892,Jump=121960612860366,Fall=111755954298423},
+
+["Gói hoạt hình Boss Mini Me"]={
+Bundle=76401293400730,
+Walk=75106887290061,Run=110721243894880,
+Idle1=108196521384991,Idle2=106594115601501,
+Swim=112165407090966,SwimIdle=135930711226111,
+Climb=89290802291547,Jump=122885535842193,Fall=94257318048288},
+
+["Gói hoạt hình chibi dễ thương"]={
+Bundle=52466328299272,
+Walk=111012968948132,Run=87544781988481,
+Idle1=97384777119919,Idle2=128055646531003,
+Swim=97153834582507,SwimIdle=109521754177979,
+Climb=70774577087790,Jump=85629495208423,Fall=85731989945385},
+
+["Sự bay lơ lửng thần thiên vô tận"]={
+Bundle=249945300329160,
+Walk=108629385247325,Run=118409763401495,
+Idle1=91463760153972,
+Swim=80379634228103,SwimIdle=127353527524703,
+Climb=107930575903717,Jump=101407222641916,Fall=82924474222458}
+}
+
+--============================================================--
+-- ANIMATION FUNCTIONS
+--============================================================--
+
+local CurrentPack = getgenv().ZYNTRIX_CurrentPack or nil
+
+local function getAnimate(character)
+    if not character then return nil end
+
+    local animate = character:FindFirstChild("Animate")
+
+    if animate then
+        return animate
+    end
+
+    local deadline = os.clock() + 8
+
+    repeat
+        animate = character:FindFirstChild("Animate")
+
+        if animate then
+            return animate
+        end
+
+        task.wait(.1)
+    until os.clock() >= deadline
+
+    return nil
+end
+
+local function setAnimationObject(folder, animationName, id)
+    if not folder or not id then return end
+
+    local anim = folder:FindFirstChild(animationName)
+
+    if not anim then
+        anim = Instance.new("Animation")
+        anim.Name = animationName
+        anim.Parent = folder
+    end
+
+    anim.AnimationId = "rbxassetid://"..tostring(id)
+end
+
+local function applyFolder(animate, folderName, id, names)
+    if not id then return end
+
+    local folder = animate:FindFirstChild(folderName)
+
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = folderName
+        folder.Parent = animate
+    end
+
+    for _,name in ipairs(names) do
+        setAnimationObject(folder,name,id)
+    end
+end
+
+local function stopAnimations(character)
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if humanoid then
+        pcall(function()
+            for _,track in ipairs(humanoid:GetPlayingAnimationTracks()) do
+                track:Stop(.05)
+            end
+        end)
+    end
+end
+
+local function applyPack(name)
+    local data = PACKS[name]
+    if not data then return false end
+
+    local character = LP.Character
+    if not character then return false end
+
+    local animate = getAnimate(character)
+    if not animate then return false end
+
+    stopAnimations(character)
+
+    applyFolder(animate,"walk",data.Walk,{"WalkAnim"})
+    applyFolder(animate,"run",data.Run,{"RunAnim"})
+    applyFolder(animate,"jump",data.Jump,{"JumpAnim"})
+    applyFolder(animate,"fall",data.Fall,{"FallAnim"})
+    applyFolder(animate,"climb",data.Climb,{"ClimbAnim"})
+    applyFolder(animate,"swim",data.Swim,{"Swim"})
+    applyFolder(animate,"swimidle",data.SwimIdle,{"SwimIdle"})
+
+    local idle = animate:FindFirstChild("idle")
+
+    if not idle then
+        idle = Instance.new("Folder")
+        idle.Name = "idle"
+        idle.Parent = animate
+    end
+
+    local idle1 = data.Idle1
+    local idle2 = data.Idle2 or data.Idle1
+
+    if idle1 then
+        setAnimationObject(idle,"Animation1",idle1)
+    end
+
+    if idle2 then
+        setAnimationObject(idle,"Animation2",idle2)
+    end
+
+    CurrentPack = name
+    getgenv().ZYNTRIX_CurrentPack = name
+
+    pcall(function()
+        animate.Disabled = true
+        task.wait(.05)
+        animate.Disabled = false
     end)
+
+    return true
 end
 
-do
-    od=od+1
-    local l=Instance.new("TextLabel"); l.Size=UDim2.new(1,0,0,16); l.BackgroundTransparency=1
-    l.Font=Enum.Font.Gotham; l.TextSize=10; l.TextColor3=Color3.fromRGB(120,120,110)
-    l.Text="Nhấn End để tắt"; l.LayoutOrder=od; l.Parent=scroll
+--============================================================--
+-- ANIMATION UI
+--============================================================--
+
+local AnimPage = New("Frame", {
+    Size = UDim2.fromScale(1,1),
+    BackgroundTransparency = 1,
+    Visible = true
+}, Content)
+
+local AnimSearch = New("TextBox", {
+    Size = UDim2.fromOffset(245,38),
+    Position = UDim2.fromOffset(0,0),
+    BackgroundColor3 = CARD,
+    BackgroundTransparency = .08,
+    PlaceholderText = "🔎  Tìm animation pack...",
+    PlaceholderColor3 = GRAY,
+    Text = "",
+    TextColor3 = WHITE,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    ClearTextOnFocus = false
+}, AnimPage)
+
+Corner(AnimSearch,9)
+Stroke(AnimSearch,PURPLE2,1)
+
+local AnimCount = New("TextLabel", {
+    Size = UDim2.fromOffset(90,38),
+    Position = UDim2.fromOffset(252,0),
+    BackgroundColor3 = CARD,
+    Text = "0 PACK",
+    Font = Enum.Font.GothamBold,
+    TextSize = 10,
+    TextColor3 = CYAN
+}, AnimPage)
+
+Corner(AnimCount)
+Stroke(AnimCount,BLUE,1)
+
+local AnimInfo = New("TextLabel", {
+    Size = UDim2.fromOffset(343,36),
+    Position = UDim2.fromOffset(0,90),
+    BackgroundColor3 = CARD2,
+    BackgroundTransparency = .1,
+    Text = "ZYNTRIX PRIME • ANIMATION PACKS",
+    Font = Enum.Font.GothamBold,
+    TextSize = 10,
+    TextColor3 = WHITE,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, AnimPage)
+
+New("UIPadding", {
+    PaddingLeft = UDim.new(0,12)
+}, AnimInfo)
+
+Corner(AnimInfo,8)
+Stroke(AnimInfo,PURPLE2,1,.4)
+
+local AnimList = New("ScrollingFrame", {
+    Size = UDim2.fromOffset(343,150),
+    Position = UDim2.fromOffset(0,137),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = PURPLE,
+    CanvasSize = UDim2.new(0,0,0,0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+}, AnimPage)
+
+New("UIListLayout", {
+    Padding = UDim.new(0,6)
+}, AnimList)
+
+--============================================================--
+-- ANIMATION CARDS
+--============================================================--
+
+local AnimCards = {}
+
+local function updateAnimationCards()
+    local query = string.lower(AnimSearch.Text or "")
+
+    for name,card in pairs(AnimCards) do
+        local show = query == "" or string.find(string.lower(name),query,1,true)
+
+        card.Visible = show
+
+        local active = CurrentPack == name
+
+        if active then
+            card.BackgroundColor3 = Color3.fromRGB(15,45,35)
+            card.Status.Text = "● ACTIVE"
+            card.Status.TextColor3 = GREEN
+            card.Apply.Text = "ON"
+            card.Apply.TextColor3 = GREEN
+        else
+            card.BackgroundColor3 = CARD
+            card.Status.Text = "○ READY"
+            card.Status.TextColor3 = GRAY
+            card.Apply.Text = "APPLY"
+            card.Apply.TextColor3 = CYAN
+        end
+    end
 end
 
-do
-    local dg, ds, sp
-    bind(bar.InputBegan, function(i)
-        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
-            dg=true; ds=i.Position; sp=m.Position
-            i.Changed:Connect(function() if i.UserInputState==Enum.UserInputState.End then dg=false end end)
+local function createAnimationCard(name,data)
+    local card = New("Frame", {
+        Size = UDim2.new(1,-5,0,57),
+        BackgroundColor3 = CARD,
+        BorderSizePixel = 0
+    }, AnimList)
+
+    Corner(card,8)
+    Stroke(card,DARK,1)
+
+    local title = New("TextLabel", {
+        Size = UDim2.new(1,-100,0,22),
+        Position = UDim2.fromOffset(9,5),
+        BackgroundTransparency = 1,
+        Text = name,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+        TextColor3 = WHITE,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd
+    }, card)
+
+    local status = New("TextLabel", {
+        Size = UDim2.new(1,-100,0,18),
+        Position = UDim2.fromOffset(9,29),
+        BackgroundTransparency = 1,
+        Text = "○ READY",
+        Font = Enum.Font.Gotham,
+        TextSize = 8,
+        TextColor3 = GRAY,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, card)
+
+    local apply = New("TextButton", {
+        Size = UDim2.fromOffset(66,25),
+        Position = UDim2.new(1,-73,0,7),
+        BackgroundColor3 = CARD2,
+        Text = "APPLY",
+        Font = Enum.Font.GothamBold,
+        TextSize = 8,
+        TextColor3 = CYAN,
+        AutoButtonColor = false
+    }, card)
+
+    Corner(apply,6)
+    Stroke(apply,BLUE,1)
+
+    local copy = New("TextButton", {
+        Size = UDim2.fromOffset(66,18),
+        Position = UDim2.new(1,-73,0,35),
+        BackgroundTransparency = 1,
+        Text = "COPY ID",
+        Font = Enum.Font.Gotham,
+        TextSize = 7,
+        TextColor3 = GRAY,
+        AutoButtonColor = false
+    }, card)
+
+    apply.MouseButton1Click:Connect(function()
+        if apply.Text == "ON" then return end
+
+        apply.Text = "..."
+        apply.TextColor3 = WHITE
+
+        local ok = applyPack(name)
+
+        if ok then
+            apply.Text = "ON"
+            apply.TextColor3 = GREEN
+        else
+            apply.Text = "ERR"
+            apply.TextColor3 = RED
+
+            task.delay(1,function()
+                if apply and apply.Parent then
+                    apply.Text = "APPLY"
+                    apply.TextColor3 = CYAN
+                end
+            end)
+        end
+
+        updateAnimationCards()
+    end)
+
+    copy.MouseButton1Click:Connect(function()
+        CopyText(data.Bundle or data.Walk or "")
+        copy.Text = "COPIED!"
+        copy.TextColor3 = GREEN
+
+        task.delay(1,function()
+            if copy and copy.Parent then
+                copy.Text = "COPY ID"
+                copy.TextColor3 = GRAY
+            end
+        end)
+    end)
+
+    AnimCards[name] = {
+        Root = card,
+        Status = status,
+        Apply = apply
+    }
+end
+
+local sortedPacks = {}
+
+for name,data in pairs(PACKS) do
+    table.insert(sortedPacks,{Name=name,Data=data})
+end
+
+table.sort(sortedPacks,function(a,b)
+    return string.lower(a.Name) < string.lower(b.Name)
+end)
+
+for _,entry in ipairs(sortedPacks) do
+    createAnimationCard(entry.Name,entry.Data)
+end
+
+AnimCount.Text = tostring(#sortedPacks).." PACK"
+
+AnimSearch:GetPropertyChangedSignal("Text"):Connect(updateAnimationCards)
+
+--============================================================--
+-- EMOTE SYSTEM
+--============================================================--
+
+local EmotePage = New("Frame", {
+    Size = UDim2.fromScale(1,1),
+    BackgroundTransparency = 1,
+    Visible = false
+}, Content)
+
+local EmoteSearch = New("TextBox", {
+    Size = UDim2.fromOffset(245,38),
+    Position = UDim2.fromOffset(0,0),
+    BackgroundColor3 = CARD,
+    PlaceholderText = "🔎  Tìm emote...",
+    PlaceholderColor3 = GRAY,
+    Text = "",
+    TextColor3 = WHITE,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    ClearTextOnFocus = false
+}, EmotePage)
+
+Corner(EmoteSearch,9)
+Stroke(EmoteSearch,PURPLE2,1)
+
+local EmoteTab1 = New("TextButton", {
+    Size = UDim2.fromOffset(70,38),
+    Position = UDim2.fromOffset(252,0),
+    BackgroundColor3 = CARD2,
+    Text = "CATALOG",
+    Font = Enum.Font.GothamBold,
+    TextSize = 8,
+    TextColor3 = CYAN,
+    AutoButtonColor = false
+}, EmotePage)
+
+Corner(EmoteTab1,8)
+Stroke(EmoteTab1,BLUE,1)
+
+local EmoteTab2 = New("TextButton", {
+    Size = UDim2.fromOffset(70,38),
+    Position = UDim2.fromOffset(326,0),
+    BackgroundColor3 = CARD,
+    Text = "SAVED",
+    Font = Enum.Font.GothamBold,
+    TextSize = 8,
+    TextColor3 = GRAY,
+    AutoButtonColor = false
+}, EmotePage)
+
+Corner(EmoteTab2,8)
+Stroke(EmoteTab2,PURPLE2,1)
+
+local EmoteInfo = New("TextLabel", {
+    Size = UDim2.fromOffset(343,36),
+    Position = UDim2.fromOffset(0,90),
+    BackgroundColor3 = CARD2,
+    Text = "ZYNTRIX PRIME • EMOTE CATALOG",
+    Font = Enum.Font.GothamBold,
+    TextSize = 10,
+    TextColor3 = WHITE,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, EmotePage)
+
+New("UIPadding", {
+    PaddingLeft = UDim.new(0,12)
+}, EmoteInfo)
+
+Corner(EmoteInfo,8)
+Stroke(EmoteInfo,PURPLE2,1,.4)
+
+local EmoteList = New("ScrollingFrame", {
+    Size = UDim2.fromOffset(343,150),
+    Position = UDim2.fromOffset(0,137),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = PURPLE,
+    CanvasSize = UDim2.new(0,0,0,0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+}, EmotePage)
+
+New("UIListLayout", {
+    Padding = UDim.new(0,6)
+}, EmoteList)
+
+--============================================================--
+-- EMOTE SETTINGS
+--============================================================--
+
+local EmoteSettings = {
+    Speed = 1,
+    Weight = 1,
+    TimePosition = 0,
+    Looped = true,
+    StopOnMove = true,
+    StopOther = true,
+    HighPriority = true
+}
+
+local CurrentEmoteTrack = nil
+local SavedEmotes = {}
+local FavoriteEmotes = {}
+
+local SAVE_FILE = "ZYNTRIX_VIP_PRIME_EMOTES.json"
+
+local function loadSaved()
+    if not readfile then return end
+
+    pcall(function()
+        if isfile and isfile(SAVE_FILE) then
+            local raw = readfile(SAVE_FILE)
+            local decoded = HttpService:JSONDecode(raw)
+
+            if type(decoded) == "table" then
+                SavedEmotes = decoded
+            end
         end
     end)
-    bind(UIS.InputChanged, function(i)
-        if dg and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
-            local d=i.Position-ds; m.Position=UDim2.fromOffset(sp.X.Offset+d.X, sp.Y.Offset+d.Y)
+end
+
+local function saveSaved()
+    if not writefile then return end
+
+    pcall(function()
+        writefile(SAVE_FILE,HttpService:JSONEncode(SavedEmotes))
+    end)
+end
+
+loadSaved()
+
+--============================================================--
+-- EMOTE PLAY
+--============================================================--
+
+local function stopEmote()
+    if CurrentEmoteTrack then
+        pcall(function()
+            CurrentEmoteTrack:Stop(.1)
+            CurrentEmoteTrack:Destroy()
+        end)
+        CurrentEmoteTrack = nil
+    end
+end
+
+local function getHumanoid()
+    local char = LP.Character
+    if not char then return nil end
+
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+local function PlayEmote(id)
+    id = tostring(id):gsub("rbxassetid://",""):gsub("%s+","")
+
+    if id == "" then return false end
+
+    local humanoid = getHumanoid()
+
+    if not humanoid then return false end
+
+    stopEmote()
+
+    if EmoteSettings.StopOther then
+        pcall(function()
+            for _,track in ipairs(humanoid:GetPlayingAnimationTracks()) do
+                track:Stop(.1)
+            end
+        end)
+    end
+
+    local anim = Instance.new("Animation")
+    anim.AnimationId = "rbxassetid://"..id
+
+    local ok,track = pcall(function()
+        return humanoid:LoadAnimation(anim)
+    end)
+
+    if not ok or not track then
+        anim:Destroy()
+        return false
+    end
+
+    CurrentEmoteTrack = track
+
+    pcall(function()
+        if EmoteSettings.HighPriority then
+            track.Priority = Enum.AnimationPriority.Action4
+        else
+            track.Priority = Enum.AnimationPriority.Action
+        end
+
+        track.Looped = EmoteSettings.Looped
+        track:Play(.1,EmoteSettings.Weight,EmoteSettings.Speed)
+
+        if EmoteSettings.TimePosition > 0 then
+            track.TimePosition = EmoteSettings.TimePosition
         end
     end)
+
+    anim.Parent = track
+
+    return true
 end
 
--- Floating Toggle Button (👁) for UI visibility
-do
-    local tglBtn = Instance.new("TextButton"); tglBtn.Size=UDim2.fromOffset(40,40); tglBtn.Position=UDim2.fromOffset(40,20)
-    tglBtn.BackgroundColor3=Color3.fromRGB(20,22,18); tglBtn.BorderSizePixel=0; tglBtn.Font=Enum.Font.GothamBold
-    tglBtn.TextSize=16; tglBtn.TextColor3=GD; tglBtn.Text="👁 ẨN"; tglBtn.Active=true; tglBtn.Draggable=true; tglBtn.Parent=sg
-    Instance.new("UICorner",tglBtn).CornerRadius=UDim.new(0,8)
-    local tglSk=Instance.new("UIStroke",tglBtn); tglSk.Color=GD; tglSk.Thickness=1.5
+--============================================================--
+-- STOP ON MOVEMENT
+--============================================================--
 
-    tglBtn.MouseButton1Click:Connect(function()
-        m.Visible = not m.Visible
-        tglBtn.Text = m.Visible and "👁 ẨN" or "👁 HIỆN"
+RunService.RenderStepped:Connect(function()
+    if not EmoteSettings.StopOnMove then return end
+    if not CurrentEmoteTrack then return end
+
+    local humanoid = getHumanoid()
+    if not humanoid then return end
+
+    if humanoid.MoveDirection.Magnitude > .05
+    or humanoid:GetState() == Enum.HumanoidStateType.Jumping
+    or humanoid:GetState() == Enum.HumanoidStateType.Freefall then
+
+        stopEmote()
+    end
+end)
+
+--============================================================--
+-- EMOTE CARD
+--============================================================--
+
+local EmoteCards = {}
+
+local function clearEmoteList()
+    for _,child in ipairs(EmoteList:GetChildren()) do
+        if not child:IsA("UIListLayout") then
+            child:Destroy()
+        end
+    end
+
+    EmoteCards = {}
+end
+
+local function createEmoteCard(info)
+    local id = info.Id or info.id
+    local name = info.Name or info.name or ("Emote "..tostring(id))
+
+    if not id then return end
+
+    local card = New("Frame", {
+        Size = UDim2.new(1,-5,0,57),
+        BackgroundColor3 = CARD,
+        BorderSizePixel = 0
+    }, EmoteList)
+
+    Corner(card,8)
+    Stroke(card,DARK,1)
+
+    local icon = New("ImageLabel", {
+        Size = UDim2.fromOffset(42,42),
+        Position = UDim2.fromOffset(7,7),
+        BackgroundColor3 = CARD2,
+        Image = "rbxthumb://type=Asset&id="..tostring(id).."&w=150&h=150"
+    }, card)
+
+    Corner(icon,7)
+
+    local title = New("TextLabel", {
+        Size = UDim2.new(1,-165,0,22),
+        Position = UDim2.fromOffset(58,5),
+        BackgroundTransparency = 1,
+        Text = tostring(name),
+        Font = Enum.Font.GothamBold,
+        TextSize = 9,
+        TextColor3 = WHITE,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd
+    }, card)
+
+    local idLabel = New("TextLabel", {
+        Size = UDim2.new(1,-165,0,18),
+        Position = UDim2.fromOffset(58,29),
+        BackgroundTransparency = 1,
+        Text = "ID: "..tostring(id),
+        Font = Enum.Font.Gotham,
+        TextSize = 7,
+        TextColor3 = GRAY,
+        TextXAlignment = Enum.TextXAlignment.Left
+    }, card)
+
+    local play = New("TextButton", {
+        Size = UDim2.fromOffset(46,22),
+        Position = UDim2.new(1,-104,0,6),
+        BackgroundColor3 = CARD2,
+        Text = "PLAY",
+        Font = Enum.Font.GothamBold,
+        TextSize = 7,
+        TextColor3 = GREEN,
+        AutoButtonColor = false
+    }, card)
+
+    Corner(play,5)
+    Stroke(play,GREEN,1)
+
+    local save = New("TextButton", {
+        Size = UDim2.fromOffset(46,22),
+        Position = UDim2.new(1,-54,0,6),
+        BackgroundColor3 = CARD2,
+        Text = "SAVE",
+        Font = Enum.Font.GothamBold,
+        TextSize = 7,
+        TextColor3 = CYAN,
+        AutoButtonColor = false
+    }, card)
+
+    Corner(save,5)
+    Stroke(save,BLUE,1)
+
+    local copy = New("TextButton", {
+        Size = UDim2.fromOffset(96,17),
+        Position = UDim2.new(1,-104,0,34),
+        BackgroundTransparency = 1,
+        Text = "COPY ID",
+        Font = Enum.Font.Gotham,
+        TextSize = 7,
+        TextColor3 = GRAY,
+        AutoButtonColor = false
+    }, card)
+
+    play.MouseButton1Click:Connect(function()
+        if PlayEmote(id) then
+            play.Text = "PLAYING"
+            play.TextColor3 = GREEN
+
+            task.delay(.8,function()
+                if play and play.Parent then
+                    play.Text = "PLAY"
+                end
+            end)
+        else
+            play.Text = "ERROR"
+            play.TextColor3 = RED
+
+            task.delay(1,function()
+                if play and play.Parent then
+                    play.Text = "PLAY"
+                    play.TextColor3 = GREEN
+                end
+            end)
+        end
     end)
+
+    save.MouseButton1Click:Connect(function()
+        local exists = false
+
+        for _,saved in ipairs(SavedEmotes) do
+            if tostring(saved.Id) == tostring(id) then
+                exists = true
+                break
+            end
+        end
+
+        if not exists then
+            table.insert(SavedEmotes,{
+                Id = tostring(id),
+                Name = tostring(name)
+            })
+
+            saveSaved()
+
+            save.Text = "SAVED"
+            save.TextColor3 = GREEN
+        else
+            save.Text = "EXISTS"
+        end
+
+        task.delay(1,function()
+            if save and save.Parent then
+                save.Text = "SAVE"
+                save.TextColor3 = CYAN
+            end
+        end)
+    end)
+
+    copy.MouseButton1Click:Connect(function()
+        CopyText(id)
+
+        copy.Text = "COPIED!"
+        copy.TextColor3 = GREEN
+
+        task.delay(1,function()
+            if copy and copy.Parent then
+                copy.Text = "COPY ID"
+                copy.TextColor3 = GRAY
+            end
+        end)
+    end)
+
+    EmoteCards[tostring(id)] = card
 end
 
--- stat updater, throttled: the old build reformatted the label every frame
-local nextStat = 0
-bind(RunS.Heartbeat, function()
-    if not alive or os.clock() < nextStat then return end
-    nextStat = os.clock() + 0.1
-    local el = os.clock() - startClock
-    local cpm = el > 1 and (cashV() - cashStart) / el * 60 or 0
-    local lpm = el > 1 and (banked - leafStart) / el * 60 or 0
-    local d = activeDump()
-    local capTxt = infBag() and "inf" or tostring(capV())
-    stat.Text = string.format("  Cash %.2f    Bag %d/%s\n  %s    dump %.3f/leaf %s\n  cash/min ~%.2f    leaves/min ~%.0f",
-        cashV(), leavesV(), capTxt, mode,
-        d and (d.rate or d.price) or 0, (d and d.rate) and "measured" or "listed", cpm, lpm)
-end)
+--============================================================--
+-- CATALOG SEARCH
+--============================================================--
 
--- ---------- unload ----------
-local function u()
-    alive = false
-    for k in pairs(S) do S[k] = false end
-    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-    pcall(function() sg:Destroy() end)
-    getgenv().__POTATO_LEAF = nil
+local CatalogPage = 1
+local CatalogSearchRunning = false
+
+local function searchCatalog()
+    if CatalogSearchRunning then return end
+
+    CatalogSearchRunning = true
+
+    clearEmoteList()
+
+    local query = EmoteSearch.Text
+
+    if query == "" then
+        query = "dance"
+    end
+
+    local ok,result = pcall(function()
+        local params = CatalogSearchParams.new()
+
+        params.SearchKeyword = query
+        params.AssetTypes = {
+            Enum.AvatarAssetType.EmoteAnimation
+        }
+
+        params.SortType = Enum.CatalogSortType.Relevance
+        params.IncludeOffSale = true
+        params.Limit = 30
+
+        return AvatarEditorService:SearchCatalog(params)
+    end)
+
+    if ok and result then
+        local page = result
+
+        local success = pcall(function()
+            local current = page:GetCurrentPage()
+
+            for _,item in ipairs(current) do
+                createEmoteCard({
+                    Id = item.Id,
+                    Name = item.Name
+                })
+            end
+        end)
+
+        if not success then
+            local fallback = {
+                {
+                    Id = 115314801778772,
+                    Name = "Dance If Youre The Best"
+                }
+            }
+
+            for _,item in ipairs(fallback) do
+                createEmoteCard(item)
+            end
+        end
+    else
+        -- R6 / executor fallback
+        createEmoteCard({
+            Id = 115314801778772,
+            Name = "Dance If Youre The Best"
+        })
+    end
+
+    CatalogSearchRunning = false
 end
-bind(UIS.InputBegan, function(i, gp)
-    if not gp and i.KeyCode == Enum.KeyCode.End then u() end
+
+--============================================================--
+-- SEARCH BUTTON
+--============================================================--
+
+local SearchButton = New("TextButton", {
+    Size = UDim2.fromOffset(343,38),
+    Position = UDim2.fromOffset(0,48),
+    BackgroundColor3 = CARD2,
+    Text = "SEARCH EMOTES",
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+    TextColor3 = CYAN,
+    AutoButtonColor = false
+}, EmotePage)
+
+Corner(SearchButton,8)
+Stroke(SearchButton,BLUE,1)
+
+SearchButton.MouseButton1Click:Connect(searchCatalog)
+
+EmoteSearch.FocusLost:Connect(function(enter)
+    if enter then
+        searchCatalog()
+    end
 end)
 
-getgenv().__POTATO_LEAF = { S = S, u = u }
-warn("[ZYNTRIX LEAF AUTOFARM v2] loaded. Toggle Auto Farm. Unload: End.")
+--============================================================--
+-- SAVED TAB
+--============================================================--
+
+local function showSaved()
+    clearEmoteList()
+
+    EmoteInfo.Text = "ZYNTRIX PRIME • SAVED EMOTES"
+
+    for _,saved in ipairs(SavedEmotes) do
+        createEmoteCard({
+            Id = saved.Id,
+            Name = saved.Name
+        })
+    end
+end
+
+local function showCatalog()
+    EmoteInfo.Text = "ZYNTRIX PRIME • EMOTE CATALOG"
+    searchCatalog()
+end
+
+EmoteTab1.MouseButton1Click:Connect(function()
+    EmoteTab1.TextColor3 = CYAN
+    EmoteTab2.TextColor3 = GRAY
+    showCatalog()
+end)
+
+EmoteTab2.MouseButton1Click:Connect(function()
+    EmoteTab1.TextColor3 = GRAY
+    EmoteTab2.TextColor3 = CYAN
+    showSaved()
+end)
+
+--============================================================--
+-- MANUAL EMOTE ID
+--============================================================--
+
+local ManualID = New("TextBox", {
+    Size = UDim2.fromOffset(160,32),
+    Position = UDim2.fromOffset(0,91),
+    BackgroundColor3 = CARD,
+    PlaceholderText = "Emote ID...",
+    PlaceholderColor3 = GRAY,
+    Text = "",
+    TextColor3 = WHITE,
+    Font = Enum.Font.Gotham,
+    TextSize = 9,
+    ClearTextOnFocus = false
+}, EmotePage)
+
+Corner(ManualID,7)
+Stroke(ManualID,PURPLE2,1)
+
+local ManualPlay = New("TextButton", {
+    Size = UDim2.fromOffset(78,32),
+    Position = UDim2.fromOffset(168,91),
+    BackgroundColor3 = CARD2,
+    Text = "PLAY ID",
+    Font = Enum.Font.GothamBold,
+    TextSize = 8,
+    TextColor3 = GREEN,
+    AutoButtonColor = false
+}, EmotePage)
+
+Corner(ManualPlay,7)
+Stroke(ManualPlay,GREEN,1)
+
+local StopButton = New("TextButton", {
+    Size = UDim2.fromOffset(78,32),
+    Position = UDim2.fromOffset(252,91),
+    BackgroundColor3 = CARD2,
+    Text = "STOP",
+    Font = Enum.Font.GothamBold,
+    TextSize = 8,
+    TextColor3 = RED,
+    AutoButtonColor = false
+}, EmotePage)
+
+Corner(StopButton,7)
+Stroke(StopButton,RED,1)
+
+ManualPlay.MouseButton1Click:Connect(function()
+    if ManualID.Text ~= "" then
+        PlayEmote(ManualID.Text)
+    end
+end)
+
+StopButton.MouseButton1Click:Connect(stopEmote)
+
+--============================================================--
+-- PAGE SWITCH
+--============================================================--
+
+local PlaceholderPage = New("Frame", {
+    Size = UDim2.fromScale(1,1),
+    BackgroundTransparency = 1,
+    Visible = false
+}, Content)
+
+local PlaceholderTitle = New("TextLabel", {
+    Size = UDim2.fromOffset(343,55),
+    Position = UDim2.fromOffset(0,50),
+    BackgroundColor3 = CARD,
+    Text = "COMING SOON",
+    Font = Enum.Font.GothamBold,
+    TextSize = 16,
+    TextColor3 = PURPLE,
+    TextXAlignment = Enum.TextXAlignment.Center
+}, PlaceholderPage)
+
+Corner(PlaceholderTitle,10)
+Stroke(PlaceholderTitle,PURPLE,1)
+
+local function setTab(tab)
+    CurrentTab = tab
+
+    AnimPage.Visible = tab == "ANIMATION"
+    EmotePage.Visible = tab == "EMOTE"
+    PlaceholderPage.Visible =
+        tab == "ITEMS"
+        or tab == "GAMES"
+        or tab == "SETTINGS"
+
+    local info = {
+        ANIMATION = AnimationTab,
+        EMOTE = EmoteTab,
+        ITEMS = ItemsTab,
+        GAMES = GamesTab,
+        SETTINGS = SettingsTab
+    }
+
+    for name,button in pairs(info) do
+        if name == tab then
+            button.BackgroundColor3 = Color3.fromRGB(50,22,65)
+            button.TextColor3 = CYAN
+            button.BackgroundTransparency = .05
+        else
+            button.BackgroundColor3 = CARD2
+            button.TextColor3 = GRAY
+            button.BackgroundTransparency = .25
+        end
+    end
+end
+
+AnimationTab.MouseButton1Click:Connect(function()
+    setTab("ANIMATION")
+end)
+
+EmoteTab.MouseButton1Click:Connect(function()
+    setTab("EMOTE")
+
+    if #EmoteList:GetChildren() <= 1 then
+        searchCatalog()
+    end
+end)
+
+ItemsTab.MouseButton1Click:Connect(function()
+    setTab("ITEMS")
+end)
+
+GamesTab.MouseButton1Click:Connect(function()
+    setTab("GAMES")
+end)
+
+SettingsTab.MouseButton1Click:Connect(function()
+    setTab("SETTINGS")
+end)
+
+--============================================================--
+-- MINI BUTTON
+--============================================================--
+
+local OpenButton = New("TextButton", {
+    Size = UDim2.fromOffset(50,50),
+    Position = UDim2.new(0,15,0.5,-25),
+    BackgroundColor3 = CARD2,
+    Text = "Z",
+    Font = Enum.Font.GothamBlack,
+    TextSize = 21,
+    TextColor3 = CYAN,
+    Visible = false,
+    AutoButtonColor = false
+}, GUI)
+
+Corner(OpenButton,14)
+Stroke(OpenButton,PURPLE,2)
+
+local function hideUI()
+    Main.Visible = false
+    OpenButton.Visible = true
+end
+
+local function showUI()
+    Main.Visible = true
+    OpenButton.Visible = false
+end
+
+MinButton.MouseButton1Click:Connect(hideUI)
+CloseButton.MouseButton1Click:Connect(hideUI)
+OpenButton.MouseButton1Click:Connect(showUI)
+
+--============================================================--
+-- KEY TOGGLE
+--============================================================--
+
+UIS.InputBegan:Connect(function(input,processed)
+    if processed then return end
+
+    if input.KeyCode == Enum.KeyCode.G then
+        if Main.Visible then
+            hideUI()
+        else
+            showUI()
+        end
+    end
+end)
+
+--============================================================--
+-- RESPawn ANIMATION FIX
+--============================================================--
+
+LP.CharacterAdded:Connect(function(character)
+    task.spawn(function()
+        task.wait(.15)
+
+        if CurrentPack then
+            applyPack(CurrentPack)
+        end
+
+        task.wait(.25)
+
+        if CurrentPack then
+            applyPack(CurrentPack)
+        end
+
+        task.wait(.55)
+
+        if CurrentPack then
+            applyPack(CurrentPack)
+        end
+
+        task.wait(.8)
+
+        if CurrentPack then
+            applyPack(CurrentPack)
+        end
+    end)
+end)
+
+--============================================================--
+-- ANIMATE REPLACEMENT FIX
+--============================================================--
+
+LP.CharacterAdded:Connect(function(character)
+
+    character.ChildAdded:Connect(function(child)
+        if child.Name == "Animate" and CurrentPack then
+            task.wait(.15)
+            applyPack(CurrentPack)
+        end
+    end)
+
+end)
+
+--============================================================--
+-- SHIMMER
+--============================================================--
+
+task.spawn(function()
+    while GUI.Parent do
+        pcall(function()
+            TitleGradient.Offset = Vector2.new(-1,0)
+
+            Tween(
+                TitleGradient,
+                1.5,
+                {Offset = Vector2.new(1,0)}
+            )
+        end)
+
+        task.wait(2)
+    end
+end)
+
+--============================================================--
+-- GLOW PULSE
+--============================================================--
+
+task.spawn(function()
+    while GUI.Parent do
+        Tween(Glow,.8,{Transparency=.65})
+        task.wait(.8)
+
+        Tween(Glow,.8,{Transparency=.9})
+        task.wait(.8)
+    end
+end)
+
+--============================================================--
+-- INITIALIZE
+--============================================================--
+
+setTab("ANIMATION")
+updateAnimationCards()
+
+print("==============================================")
+print(" ZYNTRIX VIP PRIME • ALL-IN-ONE")
+print(" ANIMATION + EMOTE")
+print(" Logo ID:",11425468695)
+print(" Animation Packs:",#sortedPacks)
+print(" Respawn Fix: ON")
+print(" Mobile UI: ON")
+print("==============================================")
