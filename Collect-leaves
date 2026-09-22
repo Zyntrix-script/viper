@@ -1,340 +1,84 @@
---============================================================--
---              ZYNTRIX VIP PRIME • ALL-IN-ONE               --
---          ANIMATION + EMOTE • MOBILE • DRAGGABLE            --
---============================================================--
+--==============================================================--
+--        ZYNTRIX VIP PRIME • ANIMATION HUB • 32 PACKS
+--        MOBILE • DRAGGABLE • SEARCH • RESPAWN FIX
+--        SLOW EFFECT • NO BLACK SCREEN • NO FALLING TEXT
+--==============================================================--
 
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local AvatarEditorService = game:GetService("AvatarEditorService")
-local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
 
-local LP = Players.LocalPlayer
+local Player = Players.LocalPlayer
 
---============================================================--
+--==============================================================--
 -- CONFIG
---============================================================--
+--==============================================================--
 
-local GUI_NAME = "ZYNTRIX_VIP_PRIME"
-local LOGO_ID = "rbxassetid://11425468695"
+local UI_IMAGE =
+    "rbxthumb://type=Asset&id=6293835670&w=420&h=420"
 
-local BG       = Color3.fromRGB(10,8,15)
-local CARD     = Color3.fromRGB(21,15,28)
-local CARD2    = Color3.fromRGB(30,18,40)
-local PURPLE   = Color3.fromRGB(155,45,255)
-local PURPLE2  = Color3.fromRGB(90,25,150)
-local BLUE     = Color3.fromRGB(45,110,255)
-local CYAN     = Color3.fromRGB(0,225,255)
-local GREEN    = Color3.fromRGB(0,255,140)
-local RED      = Color3.fromRGB(255,55,90)
-local WHITE    = Color3.fromRGB(245,245,250)
-local GRAY     = Color3.fromRGB(150,145,160)
-local DARK     = Color3.fromRGB(30,15,40)
+local MENU_IMAGE =
+    "rbxthumb://type=Asset&id=145787888&w=420&h=420"
 
---============================================================--
--- CLEAN OLD GUI
---============================================================--
+local MAIN_NAME = "ZYNTRIX_ANIMATION_HUB"
 
-pcall(function()
-    local old = CoreGui:FindFirstChild(GUI_NAME)
-    if old then old:Destroy() end
-end)
+local Cyan = Color3.fromRGB(0, 220, 255)
+local Blue = Color3.fromRGB(70, 90, 255)
+local Purple = Color3.fromRGB(170, 70, 255)
+local White = Color3.fromRGB(245, 250, 255)
+local Dark = Color3.fromRGB(7, 8, 18)
+
+local EffectsEnabled = true
+
+--==============================================================--
+-- ANTI DUPLICATE
+--==============================================================--
 
 pcall(function()
-    local old = LP:WaitForChild("PlayerGui"):FindFirstChild(GUI_NAME)
-    if old then old:Destroy() end
+    if getgenv().ZYNTRIX_ANIMATION_CLEANUP then
+        getgenv().ZYNTRIX_ANIMATION_CLEANUP()
+    end
 end)
 
---============================================================--
--- HELPERS
---============================================================--
+local Connections = {}
+local Alive = true
 
-local function New(class, props, parent)
-    local obj = Instance.new(class)
+local function Connect(signal, callback)
+    local c = signal:Connect(callback)
+    table.insert(Connections, c)
+    return c
+end
 
-    for k,v in pairs(props or {}) do
+local function Cleanup()
+    Alive = false
+
+    for _, c in ipairs(Connections) do
         pcall(function()
-            obj[k] = v
+            c:Disconnect()
         end)
     end
 
-    if parent then
-        obj.Parent = parent
+    Connections = {}
+
+    local old = Player.PlayerGui:FindFirstChild(MAIN_NAME)
+    if old then
+        old:Destroy()
     end
 
-    return obj
-end
-
-local function Corner(obj, radius)
-    New("UICorner", {
-        CornerRadius = UDim.new(0, radius or 8)
-    }, obj)
-end
-
-local function Stroke(obj, color, thickness, transparency)
-    return New("UIStroke", {
-        Color = color or PURPLE,
-        Thickness = thickness or 1,
-        Transparency = transparency or 0
-    }, obj)
-end
-
-local function Tween(obj, time, props)
-    local t = TweenService:Create(
-        obj,
-        TweenInfo.new(time, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-        props
-    )
-    t:Play()
-    return t
-end
-
-local function SafeSet(obj, property, value)
-    pcall(function()
-        obj[property] = value
-    end)
-end
-
-local function SetText(obj, text)
-    if obj and obj:IsA("TextLabel") or obj and obj:IsA("TextButton") or obj and obj:IsA("TextBox") then
-        obj.Text = tostring(text)
+    local core = game:GetService("CoreGui"):FindFirstChild(MAIN_NAME)
+    if core then
+        core:Destroy()
     end
 end
 
-local function CopyText(text)
-    pcall(function()
-        if setclipboard then
-            setclipboard(tostring(text))
-        elseif toclipboard then
-            toclipboard(tostring(text))
-        elseif Clipboard then
-            Clipboard(tostring(text))
-        end
-    end)
-end
+getgenv().ZYNTRIX_ANIMATION_CLEANUP = Cleanup
 
---============================================================--
--- SCREEN GUI
---============================================================--
-
-local GUI = New("ScreenGui", {
-    Name = GUI_NAME,
-    ResetOnSpawn = false,
-    IgnoreGuiInset = true,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-}, CoreGui)
-
---============================================================--
--- MAIN
---============================================================--
-
-local Main = New("Frame", {
-    Name = "Main",
-    Size = UDim2.fromOffset(620,370),
-    Position = UDim2.new(0.5,-310,0.5,-185),
-    BackgroundColor3 = BG,
-    BackgroundTransparency = .04,
-    BorderSizePixel = 0
-}, GUI)
-
-Corner(Main,14)
-Stroke(Main,PURPLE,1.7,0)
-
-local Glow = Stroke(Main,BLUE,5,.82)
-
---============================================================--
--- TOP BAR
---============================================================--
-
-local TopBar = New("Frame", {
-    Size = UDim2.new(1,0,0,55),
-    BackgroundTransparency = 1
-}, Main)
-
-local Logo = New("ImageLabel", {
-    Size = UDim2.fromOffset(38,38),
-    Position = UDim2.fromOffset(12,9),
-    BackgroundColor3 = CARD2,
-    BackgroundTransparency = .1,
-    Image = LOGO_ID,
-    ScaleType = Enum.ScaleType.Fit
-}, TopBar)
-
-Corner(Logo,9)
-Stroke(Logo,PURPLE,1.5)
-
-local Title = New("TextLabel", {
-    Size = UDim2.new(0,300,0,25),
-    Position = UDim2.fromOffset(60,7),
-    BackgroundTransparency = 1,
-    Text = "ZYNTRIX VIP PRIME",
-    Font = Enum.Font.GothamBold,
-    TextSize = 17,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    TextColor3 = WHITE
-}, TopBar)
-
-local TitleGradient = New("UIGradient", {
-    Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0,WHITE),
-        ColorSequenceKeypoint.new(.25,PURPLE),
-        ColorSequenceKeypoint.new(.5,BLUE),
-        ColorSequenceKeypoint.new(.75,CYAN),
-        ColorSequenceKeypoint.new(1,PURPLE)
-    })
-}, Title)
-
-local Subtitle = New("TextLabel", {
-    Size = UDim2.new(0,300,0,18),
-    Position = UDim2.fromOffset(61,31),
-    BackgroundTransparency = 1,
-    Text = "PREMIUM CONTROL PANEL • PRIME",
-    Font = Enum.Font.Gotham,
-    TextSize = 9,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    TextColor3 = GRAY
-}, TopBar)
-
-local MinButton = New("TextButton", {
-    Size = UDim2.fromOffset(32,30),
-    Position = UDim2.new(1,-75,0,12),
-    BackgroundColor3 = CARD2,
-    Text = "−",
-    Font = Enum.Font.GothamBold,
-    TextSize = 18,
-    TextColor3 = WHITE,
-    AutoButtonColor = false
-}, TopBar)
-
-Corner(MinButton,8)
-Stroke(MinButton,PURPLE,1)
-
-local CloseButton = New("TextButton", {
-    Size = UDim2.fromOffset(32,30),
-    Position = UDim2.new(1,-38,0,12),
-    BackgroundColor3 = CARD2,
-    Text = "×",
-    Font = Enum.Font.GothamBold,
-    TextSize = 19,
-    TextColor3 = RED,
-    AutoButtonColor = false
-}, TopBar)
-
-Corner(CloseButton,8)
-Stroke(CloseButton,RED,1)
-
---============================================================--
--- DRAG
---============================================================--
-
-local dragging = false
-local dragStart
-local startPos
-
-TopBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-    or input.UserInputType == Enum.UserInputType.Touch then
-
-        dragging = true
-        dragStart = input.Position
-        startPos = Main.Position
-
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-UIS.InputChanged:Connect(function(input)
-    if dragging and (
-        input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch
-    ) then
-
-        local delta = input.Position - dragStart
-
-        Main.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
---============================================================--
--- SIDEBAR
---============================================================--
-
-local Sidebar = New("Frame", {
-    Size = UDim2.fromOffset(145,295),
-    Position = UDim2.fromOffset(10,62),
-    BackgroundColor3 = CARD,
-    BackgroundTransparency = .15,
-    BorderSizePixel = 0
-}, Main)
-
-Corner(Sidebar,11)
-Stroke(Sidebar,PURPLE2,1,.25)
-
-local SideLayout = New("UIListLayout", {
-    Padding = UDim.new(0,7),
-    HorizontalAlignment = Enum.HorizontalAlignment.Center,
-    VerticalAlignment = Enum.VerticalAlignment.Top
-}, Sidebar)
-
-New("UIPadding", {
-    PaddingTop = UDim.new(0,8)
-}, Sidebar)
-
-local CurrentTab = "ANIMATION"
-local SideButtons = {}
-
-local function MakeSideButton(name, icon)
-    local b = New("TextButton", {
-        Size = UDim2.fromOffset(129,43),
-        BackgroundColor3 = CARD2,
-        BackgroundTransparency = .25,
-        BorderSizePixel = 0,
-        Text = icon.."  "..name,
-        Font = Enum.Font.GothamBold,
-        TextSize = 11,
-        TextColor3 = GRAY,
-        AutoButtonColor = false
-    }, Sidebar)
-
-    Corner(b,8)
-    Stroke(b,PURPLE2,1,.5)
-
-    SideButtons[name] = b
-    return b
-end
-
-local AnimationTab = MakeSideButton("ANIMATION","✦")
-local EmoteTab = MakeSideButton("EMOTE","♫")
-local ItemsTab = MakeSideButton("ITEMS","◆")
-local GamesTab = MakeSideButton("GAMES","◈")
-local SettingsTab = MakeSideButton("SETTINGS","⚙")
-
---============================================================--
--- CONTENT
---============================================================--
-
-local Content = New("Frame", {
-    Size = UDim2.fromOffset(445,295),
-    Position = UDim2.fromOffset(165,62),
-    BackgroundTransparency = 1
-}, Main)
-
---============================================================--
+--==============================================================--
 -- ANIMATION DATA
---============================================================--
+--==============================================================--
 
-local PACKS = {
+local AnimationPacks = {
 
 ["Adidas Aura"]={
 Walk=83842218823011,Run=118320322718866,Jump=109996626521204,
@@ -354,7 +98,7 @@ SwimIdle=18537387180,Idle1=18537376492,Idle2=18537371272},
 ["Astronaut"]={
 Walk=10921046031,Run=10921039308,Jump=10921042494,
 Fall=10921040576,Climb=10921032124,Swim=10921044000,
-SwimIdle=10921045006,Idle1=10921034824,Idle2=10921036806},
+SwimIdle=10921045006,Idle1=10921034824},
 
 ["Bubbly"]={
 Walk=910034870,Run=910025107,Jump=910016857,
@@ -407,7 +151,7 @@ Fall=10921278648,Climb=10921271391,Swim=10921273958,
 SwimIdle=10921272275,Idle1=10921278648,Idle2=10921279832},
 
 ["Superhero"]={
-Walk=10921298616,Run=10921291831,Jump=10921294559,
+Walk=10921298616,Run=10921291831,Jump=10921291831,
 Fall=10921293373,Climb=10921286911,Swim=10921295495,
 SwimIdle=10921297391,Idle1=10921288909,Idle2=10921290167},
 
@@ -419,7 +163,7 @@ SwimIdle=10921310341,Idle1=10921301576,Idle2=10921302207},
 ["Vampire"]={
 Walk=10921326949,Run=10921320299,Jump=10921322186,
 Fall=10921321317,Climb=10921314188,Swim=10921324408,
-SwimIdle=10921325443,Idle1=10921315373},
+SwimIdle=10921325443,Idle1=10921315373,Idle2=10921315373},
 
 ["Werewolf"]={
 Walk=10921342074,Run=10921336997,Jump=10921338912,
@@ -472,1200 +216,1321 @@ Fall=137079985547592,Climb=76660530164497,Swim=99909547692332,
 SwimIdle=82429732905677,Idle1=111821292044705,Idle2=90705157329932},
 
 ["Gói hoạt hình cổ tích"]={
-Bundle=107350693632269,
-Walk=104155388409994,Run=85214521829644,
-Idle1=117086336235203,Idle2=126081566479327,
-Swim=81730236977194,SwimIdle=129566463958031,
-Climb=92601441790709,Jump=101319668376661,Fall=78205337706161},
+Bundle=107350693632269,Walk=104155388409994,Run=85214521829644,
+Idle1=117086336235203,Idle2=126081566479327,Swim=81730236977194,
+SwimIdle=129566463958031,Climb=92601441790709,
+Jump=101319668376661,Fall=78205337706161},
 
 ["Gói hoạt hình kiếm kép"]={
-Bundle=122770822556243,
-Walk=133373623053068,Run=126476138839957,
-Idle1=81578950337746,Idle2=112871358653281,
-Swim=87435870674395,SwimIdle=90091920351380,
-Climb=139966022555892,Jump=121960612860366,Fall=111755954298423},
+Bundle=122770822556243,Walk=133373623053068,Run=126476138839957,
+Idle1=81578950337746,Idle2=112871358653281,Swim=87435870674395,
+SwimIdle=90091920351380,Climb=139966022555892,
+Jump=121960612860366,Fall=111755954298423},
 
 ["Gói hoạt hình Boss Mini Me"]={
-Bundle=76401293400730,
-Walk=75106887290061,Run=110721243894880,
-Idle1=108196521384991,Idle2=106594115601501,
-Swim=112165407090966,SwimIdle=135930711226111,
-Climb=89290802291547,Jump=122885535842193,Fall=94257318048288},
+Bundle=76401293400730,Walk=75106887290061,Run=110721243894880,
+Idle1=108196521384991,Idle2=106594115601501,Swim=112165407090966,
+SwimIdle=135930711226111,Climb=89290802291547,
+Jump=122885535842193,Fall=94257318048288},
 
 ["Gói hoạt hình chibi dễ thương"]={
-Bundle=52466328299272,
-Walk=111012968948132,Run=87544781988481,
-Idle1=97384777119919,Idle2=128055646531003,
-Swim=97153834582507,SwimIdle=109521754177979,
-Climb=70774577087790,Jump=85629495208423,Fall=85731989945385},
+Bundle=52466328299272,Walk=111012968948132,Run=87544781988481,
+Idle1=97384777119919,Idle2=128055646531003,Swim=97153834582507,
+SwimIdle=109521754177979,Climb=70774577087790,
+Jump=85629495208423,Fall=85731989945385},
 
 ["Sự bay lơ lửng thần thiên vô tận"]={
-Bundle=249945300329160,
-Walk=108629385247325,Run=118409763401495,
-Idle1=91463760153972,
-Swim=80379634228103,SwimIdle=127353527524703,
-Climb=107930575903717,Jump=101407222641916,Fall=82924474222458}
+Bundle=249945300329160,Walk=108629385247325,Run=118409763401495,
+Idle1=91463760153972,Swim=80379634228103,
+SwimIdle=127353527524703,Climb=107930575903717,
+Jump=101407222641916,Fall=82924474222458}
+
 }
 
---============================================================--
--- ANIMATION FUNCTIONS
---============================================================--
+--==============================================================--
+-- GUI
+--==============================================================--
 
-local CurrentPack = getgenv().ZYNTRIX_CurrentPack or nil
+local Gui = Instance.new("ScreenGui")
+Gui.Name = MAIN_NAME
+Gui.ResetOnSpawn = false
+Gui.IgnoreGuiInset = true
+Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-local function getAnimate(character)
-    if not character then return nil end
+pcall(function()
+    Gui.Parent = game:GetService("CoreGui")
+end)
 
-    local animate = character:FindFirstChild("Animate")
-
-    if animate then
-        return animate
-    end
-
-    local deadline = os.clock() + 8
-
-    repeat
-        animate = character:FindFirstChild("Animate")
-
-        if animate then
-            return animate
-        end
-
-        task.wait(.1)
-    until os.clock() >= deadline
-
-    return nil
+if not Gui.Parent then
+    Gui.Parent = Player:WaitForChild("PlayerGui")
 end
 
-local function setAnimationObject(folder, animationName, id)
-    if not folder or not id then return end
+-- KHÔNG CÓ BACKGROUND FULL SCREEN
+-- Đây là phần đã sửa lỗi màn hình đen.
 
-    local anim = folder:FindFirstChild(animationName)
+--==============================================================--
+-- HELPERS
+--==============================================================--
 
-    if not anim then
-        anim = Instance.new("Animation")
-        anim.Name = animationName
-        anim.Parent = folder
-    end
-
-    anim.AnimationId = "rbxassetid://"..tostring(id)
+local function Corner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 12)
+    c.Parent = parent
+    return c
 end
 
-local function applyFolder(animate, folderName, id, names)
-    if not id then return end
-
-    local folder = animate:FindFirstChild(folderName)
-
-    if not folder then
-        folder = Instance.new("Folder")
-        folder.Name = folderName
-        folder.Parent = animate
-    end
-
-    for _,name in ipairs(names) do
-        setAnimationObject(folder,name,id)
-    end
+local function Stroke(parent, color, thickness, transparency)
+    local s = Instance.new("UIStroke")
+    s.Color = color or Cyan
+    s.Thickness = thickness or 1
+    s.Transparency = transparency or 0
+    s.Parent = parent
+    return s
 end
 
-local function stopAnimations(character)
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
-    if humanoid then
-        pcall(function()
-            for _,track in ipairs(humanoid:GetPlayingAnimationTracks()) do
-                track:Stop(.05)
-            end
-        end)
-    end
+local function Gradient(parent, c1, c2)
+    local g = Instance.new("UIGradient")
+    g.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, c1),
+        ColorSequenceKeypoint.new(1, c2)
+    })
+    g.Rotation = 0
+    g.Parent = parent
+    return g
 end
 
-local function applyPack(name)
-    local data = PACKS[name]
-    if not data then return false end
-
-    local character = LP.Character
-    if not character then return false end
-
-    local animate = getAnimate(character)
-    if not animate then return false end
-
-    stopAnimations(character)
-
-    applyFolder(animate,"walk",data.Walk,{"WalkAnim"})
-    applyFolder(animate,"run",data.Run,{"RunAnim"})
-    applyFolder(animate,"jump",data.Jump,{"JumpAnim"})
-    applyFolder(animate,"fall",data.Fall,{"FallAnim"})
-    applyFolder(animate,"climb",data.Climb,{"ClimbAnim"})
-    applyFolder(animate,"swim",data.Swim,{"Swim"})
-    applyFolder(animate,"swimidle",data.SwimIdle,{"SwimIdle"})
-
-    local idle = animate:FindFirstChild("idle")
-
-    if not idle then
-        idle = Instance.new("Folder")
-        idle.Name = "idle"
-        idle.Parent = animate
-    end
-
-    local idle1 = data.Idle1
-    local idle2 = data.Idle2 or data.Idle1
-
-    if idle1 then
-        setAnimationObject(idle,"Animation1",idle1)
-    end
-
-    if idle2 then
-        setAnimationObject(idle,"Animation2",idle2)
-    end
-
-    CurrentPack = name
-    getgenv().ZYNTRIX_CurrentPack = name
-
-    pcall(function()
-        animate.Disabled = true
-        task.wait(.05)
-        animate.Disabled = false
-    end)
-
-    return true
+local function MakeText(parent, text, size, bold)
+    local t = Instance.new("TextLabel")
+    t.BackgroundTransparency = 1
+    t.Text = text
+    t.TextColor3 = White
+    t.TextSize = size or 14
+    t.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.Parent = parent
+    return t
 end
 
---============================================================--
--- ANIMATION UI
---============================================================--
+local function MakeButton(parent, text)
+    local b = Instance.new("TextButton")
+    b.AutoButtonColor = false
+    b.Text = text
+    b.TextColor3 = White
+    b.TextSize = 13
+    b.Font = Enum.Font.GothamBold
+    b.BackgroundColor3 = Color3.fromRGB(12, 15, 30)
+    b.BackgroundTransparency = 0.15
+    b.BorderSizePixel = 0
+    b.Parent = parent
 
-local AnimPage = New("Frame", {
-    Size = UDim2.fromScale(1,1),
-    BackgroundTransparency = 1,
-    Visible = true
-}, Content)
+    Corner(b, 10)
+    Stroke(b, Color3.fromRGB(40, 100, 150), 1, 0.25)
 
-local AnimSearch = New("TextBox", {
-    Size = UDim2.fromOffset(245,38),
-    Position = UDim2.fromOffset(0,0),
-    BackgroundColor3 = CARD,
-    BackgroundTransparency = .08,
-    PlaceholderText = "🔎  Tìm animation pack...",
-    PlaceholderColor3 = GRAY,
-    Text = "",
-    TextColor3 = WHITE,
-    Font = Enum.Font.Gotham,
-    TextSize = 11,
-    ClearTextOnFocus = false
-}, AnimPage)
-
-Corner(AnimSearch,9)
-Stroke(AnimSearch,PURPLE2,1)
-
-local AnimCount = New("TextLabel", {
-    Size = UDim2.fromOffset(90,38),
-    Position = UDim2.fromOffset(252,0),
-    BackgroundColor3 = CARD,
-    Text = "0 PACK",
-    Font = Enum.Font.GothamBold,
-    TextSize = 10,
-    TextColor3 = CYAN
-}, AnimPage)
-
-Corner(AnimCount)
-Stroke(AnimCount,BLUE,1)
-
-local AnimInfo = New("TextLabel", {
-    Size = UDim2.fromOffset(343,36),
-    Position = UDim2.fromOffset(0,90),
-    BackgroundColor3 = CARD2,
-    BackgroundTransparency = .1,
-    Text = "ZYNTRIX PRIME • ANIMATION PACKS",
-    Font = Enum.Font.GothamBold,
-    TextSize = 10,
-    TextColor3 = WHITE,
-    TextXAlignment = Enum.TextXAlignment.Left
-}, AnimPage)
-
-New("UIPadding", {
-    PaddingLeft = UDim.new(0,12)
-}, AnimInfo)
-
-Corner(AnimInfo,8)
-Stroke(AnimInfo,PURPLE2,1,.4)
-
-local AnimList = New("ScrollingFrame", {
-    Size = UDim2.fromOffset(343,150),
-    Position = UDim2.fromOffset(0,137),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 3,
-    ScrollBarImageColor3 = PURPLE,
-    CanvasSize = UDim2.new(0,0,0,0),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y
-}, AnimPage)
-
-New("UIListLayout", {
-    Padding = UDim.new(0,6)
-}, AnimList)
-
---============================================================--
--- ANIMATION CARDS
---============================================================--
-
-local AnimCards = {}
-
-local function updateAnimationCards()
-    local query = string.lower(AnimSearch.Text or "")
-
-    for name,card in pairs(AnimCards) do
-        local show = query == "" or string.find(string.lower(name),query,1,true)
-
-        card.Visible = show
-
-        local active = CurrentPack == name
-
-        if active then
-            card.BackgroundColor3 = Color3.fromRGB(15,45,35)
-            card.Status.Text = "● ACTIVE"
-            card.Status.TextColor3 = GREEN
-            card.Apply.Text = "ON"
-            card.Apply.TextColor3 = GREEN
-        else
-            card.BackgroundColor3 = CARD
-            card.Status.Text = "○ READY"
-            card.Status.TextColor3 = GRAY
-            card.Apply.Text = "APPLY"
-            card.Apply.TextColor3 = CYAN
-        end
-    end
+    return b
 end
 
-local function createAnimationCard(name,data)
-    local card = New("Frame", {
-        Size = UDim2.new(1,-5,0,57),
-        BackgroundColor3 = CARD,
-        BorderSizePixel = 0
-    }, AnimList)
+--==============================================================--
+-- MAIN
+--==============================================================--
 
-    Corner(card,8)
-    Stroke(card,DARK,1)
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 620, 0, 370)
+Main.Position = UDim2.new(0.5, -310, 0.5, -185)
+Main.BackgroundColor3 = Dark
+Main.BackgroundTransparency = 0.20
+Main.BorderSizePixel = 0
+Main.Parent = Gui
 
-    local title = New("TextLabel", {
-        Size = UDim2.new(1,-100,0,22),
-        Position = UDim2.fromOffset(9,5),
-        BackgroundTransparency = 1,
-        Text = name,
-        Font = Enum.Font.GothamBold,
-        TextSize = 10,
-        TextColor3 = WHITE,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd
-    }, card)
+Corner(Main, 18)
 
-    local status = New("TextLabel", {
-        Size = UDim2.new(1,-100,0,18),
-        Position = UDim2.fromOffset(9,29),
-        BackgroundTransparency = 1,
-        Text = "○ READY",
-        Font = Enum.Font.Gotham,
-        TextSize = 8,
-        TextColor3 = GRAY,
-        TextXAlignment = Enum.TextXAlignment.Left
-    }, card)
+local MainStroke = Stroke(Main, Cyan, 1.5, 0.15)
 
-    local apply = New("TextButton", {
-        Size = UDim2.fromOffset(66,25),
-        Position = UDim2.new(1,-73,0,7),
-        BackgroundColor3 = CARD2,
-        Text = "APPLY",
-        Font = Enum.Font.GothamBold,
-        TextSize = 8,
-        TextColor3 = CYAN,
-        AutoButtonColor = false
-    }, card)
+--==============================================================--
+-- TOP BAR
+--==============================================================--
 
-    Corner(apply,6)
-    Stroke(apply,BLUE,1)
+local Top = Instance.new("Frame")
+Top.Size = UDim2.new(1, 0, 0, 58)
+Top.BackgroundTransparency = 1
+Top.Parent = Main
 
-    local copy = New("TextButton", {
-        Size = UDim2.fromOffset(66,18),
-        Position = UDim2.new(1,-73,0,35),
-        BackgroundTransparency = 1,
-        Text = "COPY ID",
-        Font = Enum.Font.Gotham,
-        TextSize = 7,
-        TextColor3 = GRAY,
-        AutoButtonColor = false
-    }, card)
+local Image = Instance.new("ImageLabel")
+Image.Size = UDim2.new(0, 42, 0, 42)
+Image.Position = UDim2.new(0, 12, 0, 8)
+Image.BackgroundTransparency = 1
+Image.Image = UI_IMAGE
+Image.Parent = Top
 
-    apply.MouseButton1Click:Connect(function()
-        if apply.Text == "ON" then return end
+Corner(Image, 12)
+Stroke(Image, Cyan, 1, 0.25)
 
-        apply.Text = "..."
-        apply.TextColor3 = WHITE
+local Title = MakeText(
+    Top,
+    "ZYNTRIX VIP PRIME • ANIMATION HUB ",
+    16,
+    true
+)
 
-        local ok = applyPack(name)
+Title.Position = UDim2.new(0, 64, 0, 7)
+Title.Size = UDim2.new(1, -150, 0, 24)
 
-        if ok then
-            apply.Text = "ON"
-            apply.TextColor3 = GREEN
-        else
-            apply.Text = "ERR"
-            apply.TextColor3 = RED
+local Subtitle = MakeText(
+    Top,
+    "32 PACKS • MOBILE • RESPAWN FIX ",
+    10,
+    false
+)
 
-            task.delay(1,function()
-                if apply and apply.Parent then
-                    apply.Text = "APPLY"
-                    apply.TextColor3 = CYAN
+Subtitle.TextColor3 = Color3.fromRGB(150, 180, 205)
+Subtitle.Position = UDim2.new(0, 65, 0, 31)
+Subtitle.Size = UDim2.new(1, -150, 0, 18)
+
+--==============================================================--
+-- TOP BUTTONS
+--==============================================================--
+
+local Minimize = Instance.new("TextButton")
+Minimize.Size = UDim2.new(0, 34, 0, 30)
+Minimize.Position = UDim2.new(1, -76, 0, 14)
+Minimize.Text = "−"
+Minimize.TextSize = 20
+Minimize.Font = Enum.Font.GothamBold
+Minimize.TextColor3 = White
+Minimize.BackgroundColor3 = Color3.fromRGB(20, 25, 45)
+Minimize.BackgroundTransparency = 0.15
+Minimize.BorderSizePixel = 0
+Minimize.Parent = Top
+Corner(Minimize, 9)
+
+local Close = Instance.new("TextButton")
+Close.Size = UDim2.new(0, 34, 0, 30)
+Close.Position = UDim2.new(1, -38, 0, 14)
+Close.Text = "×"
+Close.TextSize = 20
+Close.Font = Enum.Font.GothamBold
+Close.TextColor3 = White
+Close.BackgroundColor3 = Color3.fromRGB(20, 25, 45)
+Close.BackgroundTransparency = 0.15
+Close.BorderSizePixel = 0
+Close.Parent = Top
+Corner(Close, 9)
+
+--==============================================================--
+-- SEARCH
+--==============================================================--
+
+local Search = Instance.new("TextBox")
+Search.Size = UDim2.new(0, 245, 0, 34)
+Search.Position = UDim2.new(0, 14, 0, 65)
+Search.PlaceholderText = "Tìm animation pack... "
+Search.Text = ""
+Search.ClearTextOnFocus = false
+Search.TextColor3 = White
+Search.PlaceholderColor3 = Color3.fromRGB(120, 135, 155)
+Search.TextSize = 12
+Search.Font = Enum.Font.Gotham
+Search.BackgroundColor3 = Color3.fromRGB(10, 13, 26)
+Search.BackgroundTransparency = 0.12
+Search.BorderSizePixel = 0
+Search.Parent = Main
+
+Corner(Search, 10)
+Stroke(Search, Color3.fromRGB(40, 110, 160), 1, 0.3)
+
+--==============================================================--
+-- SIDEBAR
+--==============================================================--
+
+local Sidebar = Instance.new("ScrollingFrame")
+Sidebar.Size = UDim2.new(0, 135, 0, 245)
+Sidebar.Position = UDim2.new(0, 14, 0, 108)
+Sidebar.BackgroundColor3 = Color3.fromRGB(9, 11, 23)
+Sidebar.BackgroundTransparency = 0.12
+Sidebar.BorderSizePixel = 0
+Sidebar.ScrollBarThickness = 2
+Sidebar.CanvasSize = UDim2.new()
+Sidebar.Parent = Main
+
+Corner(Sidebar, 12)
+Stroke(Sidebar, Purple, 1, 0.4)
+
+local SidebarLayout = Instance.new("UIListLayout")
+SidebarLayout.Padding = UDim.new(0, 6)
+SidebarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+SidebarLayout.Parent = Sidebar
+
+local SidebarPadding = Instance.new("UIPadding")
+SidebarPadding.PaddingTop = UDim.new(0, 8)
+SidebarPadding.PaddingBottom = UDim.new(0, 8)
+SidebarPadding.Parent = Sidebar
+
+--==============================================================--
+-- CONTENT
+--==============================================================--
+
+local Content = Instance.new("ScrollingFrame")
+Content.Size = UDim2.new(0, 441, 0, 245)
+Content.Position = UDim2.new(0, 163, 0, 108)
+Content.BackgroundColor3 = Color3.fromRGB(8, 10, 21)
+Content.BackgroundTransparency = 0.08
+Content.BorderSizePixel = 0
+Content.ScrollBarThickness = 3
+Content.CanvasSize = UDim2.new()
+Content.Parent = Main
+
+Corner(Content, 12)
+Stroke(Content, Cyan, 1, 0.35)
+
+local ContentLayout = Instance.new("UIListLayout")
+ContentLayout.Padding = UDim.new(0, 7)
+ContentLayout.Parent = Content
+
+local ContentPadding = Instance.new("UIPadding")
+ContentPadding.PaddingTop = UDim.new(0, 8)
+ContentPadding.PaddingBottom = UDim.new(0, 8)
+ContentPadding.PaddingLeft = UDim.new(0, 8)
+ContentPadding.PaddingRight = UDim.new(0, 8)
+ContentPadding.Parent = Content
+
+--==============================================================--
+-- STATUS
+--==============================================================--
+
+local Status = MakeText(
+    Main,
+    "READY • CHỌN PACK ĐỂ ÁP DỤNG ",
+    10,
+    true
+)
+
+Status.Position = UDim2.new(0, 164, 0, 78)
+Status.Size = UDim2.new(0, 430, 0, 22)
+Status.TextColor3 = Color3.fromRGB(110, 235, 255)
+
+--==============================================================--
+-- MENU BUTTON
+--==============================================================--
+
+local MenuButton = Instance.new("ImageButton")
+MenuButton.Name = "MenuButton"
+MenuButton.Size = UDim2.new(0, 55, 0, 55)
+MenuButton.Position = UDim2.new(0, 18, 0.5, -28)
+MenuButton.BackgroundColor3 = Color3.fromRGB(8, 10, 22)
+MenuButton.BackgroundTransparency = 0.08
+MenuButton.BorderSizePixel = 0
+MenuButton.Image = MENU_IMAGE
+MenuButton.Visible = false
+MenuButton.Parent = Gui
+
+Corner(MenuButton, 15)
+Stroke(MenuButton, Cyan, 1.5, 0.15)
+
+--==============================================================--
+-- DRAG SYSTEM
+--==============================================================--
+
+local function MakeDraggable(object, handle)
+
+    local dragging = false
+    local dragStart
+    local startPos
+
+    Connect(handle.InputBegan, function(input)
+
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+            dragging = true
+            dragStart = input.Position
+            startPos = object.Position
+
+            local connection
+
+            connection = input.Changed:Connect(function()
+
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+
+                    if connection then
+                        connection:Disconnect()
+                    end
                 end
+
             end)
+
         end
 
-        updateAnimationCards()
     end)
 
-    copy.MouseButton1Click:Connect(function()
-        CopyText(data.Bundle or data.Walk or "")
-        copy.Text = "COPIED!"
-        copy.TextColor3 = GREEN
+    Connect(UserInputService.InputChanged, function(input)
 
-        task.delay(1,function()
-            if copy and copy.Parent then
-                copy.Text = "COPY ID"
-                copy.TextColor3 = GRAY
-            end
-        end)
+        if not dragging then
+            return
+        end
+
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+
+        local delta = input.Position - dragStart
+
+        object.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+
     end)
-
-    AnimCards[name] = {
-        Root = card,
-        Status = status,
-        Apply = apply
-    }
 end
 
-local sortedPacks = {}
+MakeDraggable(Main, Top)
+MakeDraggable(MenuButton, MenuButton)
 
-for name,data in pairs(PACKS) do
-    table.insert(sortedPacks,{Name=name,Data=data})
+--==============================================================--
+-- ANIMATION APPLY SYSTEM
+--==============================================================--
+
+local CurrentPackName = nil
+local ApplyToken = 0
+
+local function GetCharacter()
+    return Player.Character
 end
 
-table.sort(sortedPacks,function(a,b)
-    return string.lower(a.Name) < string.lower(b.Name)
-end)
+local function GetAnimate()
+    local Character = GetCharacter()
 
-for _,entry in ipairs(sortedPacks) do
-    createAnimationCard(entry.Name,entry.Data)
+    if not Character then
+        return nil
+    end
+
+    local Animate = Character:FindFirstChild("Animate")
+
+    if not Animate then
+        Animate = Character:WaitForChild("Animate", 5)
+    end
+
+    return Animate
 end
 
-AnimCount.Text = tostring(#sortedPacks).." PACK"
+local function EnsureAnimation(parent, name)
 
-AnimSearch:GetPropertyChangedSignal("Text"):Connect(updateAnimationCards)
+    local object = parent:FindFirstChild(name)
 
---============================================================--
--- EMOTE SYSTEM
---============================================================--
+    if not object then
+        object = Instance.new("Animation")
+        object.Name = name
+        object.Parent = parent
+    end
 
-local EmotePage = New("Frame", {
-    Size = UDim2.fromScale(1,1),
-    BackgroundTransparency = 1,
-    Visible = false
-}, Content)
+    return object
+end
 
-local EmoteSearch = New("TextBox", {
-    Size = UDim2.fromOffset(245,38),
-    Position = UDim2.fromOffset(0,0),
-    BackgroundColor3 = CARD,
-    PlaceholderText = "🔎  Tìm emote...",
-    PlaceholderColor3 = GRAY,
-    Text = "",
-    TextColor3 = WHITE,
-    Font = Enum.Font.Gotham,
-    TextSize = 11,
-    ClearTextOnFocus = false
-}, EmotePage)
+local function SetAnimation(parent, name, id)
 
-Corner(EmoteSearch,9)
-Stroke(EmoteSearch,PURPLE2,1)
+    if not id then
+        return
+    end
 
-local EmoteTab1 = New("TextButton", {
-    Size = UDim2.fromOffset(70,38),
-    Position = UDim2.fromOffset(252,0),
-    BackgroundColor3 = CARD2,
-    Text = "CATALOG",
-    Font = Enum.Font.GothamBold,
-    TextSize = 8,
-    TextColor3 = CYAN,
-    AutoButtonColor = false
-}, EmotePage)
-
-Corner(EmoteTab1,8)
-Stroke(EmoteTab1,BLUE,1)
-
-local EmoteTab2 = New("TextButton", {
-    Size = UDim2.fromOffset(70,38),
-    Position = UDim2.fromOffset(326,0),
-    BackgroundColor3 = CARD,
-    Text = "SAVED",
-    Font = Enum.Font.GothamBold,
-    TextSize = 8,
-    TextColor3 = GRAY,
-    AutoButtonColor = false
-}, EmotePage)
-
-Corner(EmoteTab2,8)
-Stroke(EmoteTab2,PURPLE2,1)
-
-local EmoteInfo = New("TextLabel", {
-    Size = UDim2.fromOffset(343,36),
-    Position = UDim2.fromOffset(0,90),
-    BackgroundColor3 = CARD2,
-    Text = "ZYNTRIX PRIME • EMOTE CATALOG",
-    Font = Enum.Font.GothamBold,
-    TextSize = 10,
-    TextColor3 = WHITE,
-    TextXAlignment = Enum.TextXAlignment.Left
-}, EmotePage)
-
-New("UIPadding", {
-    PaddingLeft = UDim.new(0,12)
-}, EmoteInfo)
-
-Corner(EmoteInfo,8)
-Stroke(EmoteInfo,PURPLE2,1,.4)
-
-local EmoteList = New("ScrollingFrame", {
-    Size = UDim2.fromOffset(343,150),
-    Position = UDim2.fromOffset(0,137),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 3,
-    ScrollBarImageColor3 = PURPLE,
-    CanvasSize = UDim2.new(0,0,0,0),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y
-}, EmotePage)
-
-New("UIListLayout", {
-    Padding = UDim.new(0,6)
-}, EmoteList)
-
---============================================================--
--- EMOTE SETTINGS
---============================================================--
-
-local EmoteSettings = {
-    Speed = 1,
-    Weight = 1,
-    TimePosition = 0,
-    Looped = true,
-    StopOnMove = true,
-    StopOther = true,
-    HighPriority = true
-}
-
-local CurrentEmoteTrack = nil
-local SavedEmotes = {}
-local FavoriteEmotes = {}
-
-local SAVE_FILE = "ZYNTRIX_VIP_PRIME_EMOTES.json"
-
-local function loadSaved()
-    if not readfile then return end
+    local animation = EnsureAnimation(parent, name)
 
     pcall(function()
-        if isfile and isfile(SAVE_FILE) then
-            local raw = readfile(SAVE_FILE)
-            local decoded = HttpService:JSONDecode(raw)
+        animation.AnimationId = "rbxassetid://" .. tostring(id)
+    end)
+end
 
-            if type(decoded) == "table" then
-                SavedEmotes = decoded
+local function ApplyPack(packName)
+
+    local pack = AnimationPacks[packName]
+
+    if not pack then
+        return
+    end
+
+    CurrentPackName = packName
+    ApplyToken += 1
+
+    local myToken = ApplyToken
+
+    Status.Text =
+        "ĐANG ÁP DỤNG: " .. packName .. " "
+
+    task.spawn(function()
+
+        local retryTimes = {
+            0,
+            0.15,
+            0.35,
+            0.7,
+            1.2,
+            2,
+            3
+        }
+
+        for _, delayTime in ipairs(retryTimes) do
+
+            if myToken ~= ApplyToken or not Alive then
+                return
             end
-        end
-    end)
-end
 
-local function saveSaved()
-    if not writefile then return end
-
-    pcall(function()
-        writefile(SAVE_FILE,HttpService:JSONEncode(SavedEmotes))
-    end)
-end
-
-loadSaved()
-
---============================================================--
--- EMOTE PLAY
---============================================================--
-
-local function stopEmote()
-    if CurrentEmoteTrack then
-        pcall(function()
-            CurrentEmoteTrack:Stop(.1)
-            CurrentEmoteTrack:Destroy()
-        end)
-        CurrentEmoteTrack = nil
-    end
-end
-
-local function getHumanoid()
-    local char = LP.Character
-    if not char then return nil end
-
-    return char:FindFirstChildOfClass("Humanoid")
-end
-
-local function PlayEmote(id)
-    id = tostring(id):gsub("rbxassetid://",""):gsub("%s+","")
-
-    if id == "" then return false end
-
-    local humanoid = getHumanoid()
-
-    if not humanoid then return false end
-
-    stopEmote()
-
-    if EmoteSettings.StopOther then
-        pcall(function()
-            for _,track in ipairs(humanoid:GetPlayingAnimationTracks()) do
-                track:Stop(.1)
+            if delayTime > 0 then
+                task.wait(delayTime)
             end
-        end)
-    end
 
-    local anim = Instance.new("Animation")
-    anim.AnimationId = "rbxassetid://"..id
+            local Animate = GetAnimate()
 
-    local ok,track = pcall(function()
-        return humanoid:LoadAnimation(anim)
-    end)
+            if Animate then
 
-    if not ok or not track then
-        anim:Destroy()
-        return false
-    end
+                pcall(function()
 
-    CurrentEmoteTrack = track
+                    local walk =
+                        Animate:FindFirstChild("walk")
 
-    pcall(function()
-        if EmoteSettings.HighPriority then
-            track.Priority = Enum.AnimationPriority.Action4
-        else
-            track.Priority = Enum.AnimationPriority.Action
+                    if walk then
+                        SetAnimation(
+                            walk,
+                            "WalkAnim",
+                            pack.Walk
+                        )
+                    end
+
+                    local run =
+                        Animate:FindFirstChild("run")
+
+                    if run then
+                        SetAnimation(
+                            run,
+                            "RunAnim",
+                            pack.Run
+                        )
+                    end
+
+                    local jump =
+                        Animate:FindFirstChild("jump")
+
+                    if jump then
+                        SetAnimation(
+                            jump,
+                            "JumpAnim",
+                            pack.Jump
+                        )
+                    end
+
+                    local fall =
+                        Animate:FindFirstChild("fall")
+
+                    if fall then
+                        SetAnimation(
+                            fall,
+                            "FallAnim",
+                            pack.Fall
+                        )
+                    end
+
+                    local climb =
+                        Animate:FindFirstChild("climb")
+
+                    if climb then
+                        SetAnimation(
+                            climb,
+                            "ClimbAnim",
+                            pack.Climb
+                        )
+                    end
+
+                    local swim =
+                        Animate:FindFirstChild("swim")
+
+                    if swim then
+                        SetAnimation(
+                            swim,
+                            "Swim",
+                            pack.Swim
+                        )
+                    end
+
+                    local swimIdle =
+                        Animate:FindFirstChild("swimidle")
+
+                    if swimIdle then
+                        SetAnimation(
+                            swimIdle,
+                            "SwimIdle",
+                            pack.SwimIdle
+                        )
+                    end
+
+                    local idle =
+                        Animate:FindFirstChild("idle")
+
+                    if idle then
+
+                        if pack.Idle1 then
+                            SetAnimation(
+                                idle,
+                                "Animation1",
+                                pack.Idle1
+                            )
+                        end
+
+                        if pack.Idle2 then
+                            SetAnimation(
+                                idle,
+                                "Animation2",
+                                pack.Idle2
+                            )
+                        end
+
+                    end
+
+                end)
+
+                Status.Text =
+                    "ACTIVE • " .. packName .. " "
+
+                return
+            end
+
         end
 
-        track.Looped = EmoteSettings.Looped
-        track:Play(.1,EmoteSettings.Weight,EmoteSettings.Speed)
+        Status.Text =
+            "CHƯA ÁP DỤNG ĐƯỢC • THỬ LẠI "
 
-        if EmoteSettings.TimePosition > 0 then
-            track.TimePosition = EmoteSettings.TimePosition
-        end
     end)
-
-    anim.Parent = track
-
-    return true
 end
 
---============================================================--
--- STOP ON MOVEMENT
---============================================================--
+--==============================================================--
+-- PACK CARDS
+--==============================================================--
 
-RunService.RenderStepped:Connect(function()
-    if not EmoteSettings.StopOnMove then return end
-    if not CurrentEmoteTrack then return end
+local PackCards = {}
 
-    local humanoid = getHumanoid()
-    if not humanoid then return end
-
-    if humanoid.MoveDirection.Magnitude > .05
-    or humanoid:GetState() == Enum.HumanoidStateType.Jumping
-    or humanoid:GetState() == Enum.HumanoidStateType.Freefall then
-
-        stopEmote()
-    end
-end)
-
---============================================================--
--- EMOTE CARD
---============================================================--
-
-local EmoteCards = {}
-
-local function clearEmoteList()
-    for _,child in ipairs(EmoteList:GetChildren()) do
-        if not child:IsA("UIListLayout") then
+local function ClearContent()
+    for _, child in ipairs(Content:GetChildren()) do
+        if child:IsA("GuiObject") then
             child:Destroy()
         end
     end
 
-    EmoteCards = {}
+    PackCards = {}
 end
 
-local function createEmoteCard(info)
-    local id = info.Id or info.id
-    local name = info.Name or info.name or ("Emote "..tostring(id))
+local function CreatePackCard(packName)
 
-    if not id then return end
+    local card = Instance.new("TextButton")
+    card.Name = packName
+    card.Size = UDim2.new(1, -4, 0, 52)
+    card.AutoButtonColor = false
+    card.Text = ""
+    card.BackgroundColor3 = Color3.fromRGB(13, 16, 32)
+    card.BackgroundTransparency = 0.10
+    card.BorderSizePixel = 0
+    card.Parent = Content
 
-    local card = New("Frame", {
-        Size = UDim2.new(1,-5,0,57),
-        BackgroundColor3 = CARD,
-        BorderSizePixel = 0
-    }, EmoteList)
+    Corner(card, 11)
 
-    Corner(card,8)
-    Stroke(card,DARK,1)
+    local border =
+        Stroke(
+            card,
+            Color3.fromRGB(40, 100, 155),
+            1,
+            0.3
+        )
 
-    local icon = New("ImageLabel", {
-        Size = UDim2.fromOffset(42,42),
-        Position = UDim2.fromOffset(7,7),
-        BackgroundColor3 = CARD2,
-        Image = "rbxthumb://type=Asset&id="..tostring(id).."&w=150&h=150"
-    }, card)
+    local title = MakeText(
+        card,
+        packName .. " ",
+        13,
+        true
+    )
 
-    Corner(icon,7)
+    title.Position = UDim2.new(0, 12, 0, 7)
+    title.Size = UDim2.new(1, -24, 0, 20)
 
-    local title = New("TextLabel", {
-        Size = UDim2.new(1,-165,0,22),
-        Position = UDim2.fromOffset(58,5),
-        BackgroundTransparency = 1,
-        Text = tostring(name),
-        Font = Enum.Font.GothamBold,
-        TextSize = 9,
-        TextColor3 = WHITE,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd
-    }, card)
+    local sub = MakeText(
+        card,
+        "ANIMATION PACK • CLICK TO APPLY ",
+        9,
+        false
+    )
 
-    local idLabel = New("TextLabel", {
-        Size = UDim2.new(1,-165,0,18),
-        Position = UDim2.fromOffset(58,29),
-        BackgroundTransparency = 1,
-        Text = "ID: "..tostring(id),
-        Font = Enum.Font.Gotham,
-        TextSize = 7,
-        TextColor3 = GRAY,
-        TextXAlignment = Enum.TextXAlignment.Left
-    }, card)
+    sub.Position = UDim2.new(0, 12, 0, 29)
+    sub.Size = UDim2.new(1, -24, 0, 15)
+    sub.TextColor3 = Color3.fromRGB(125, 155, 180)
 
-    local play = New("TextButton", {
-        Size = UDim2.fromOffset(46,22),
-        Position = UDim2.new(1,-104,0,6),
-        BackgroundColor3 = CARD2,
-        Text = "PLAY",
-        Font = Enum.Font.GothamBold,
-        TextSize = 7,
-        TextColor3 = GREEN,
-        AutoButtonColor = false
-    }, card)
+    Connect(card.MouseEnter, function()
+        TweenService:Create(
+            card,
+            TweenInfo.new(
+                0.25,
+                Enum.EasingStyle.Sine,
+                Enum.EasingDirection.Out
+            ),
+            {
+                BackgroundColor3 =
+                    Color3.fromRGB(18, 25, 48)
+            }
+        ):Play()
 
-    Corner(play,5)
-    Stroke(play,GREEN,1)
-
-    local save = New("TextButton", {
-        Size = UDim2.fromOffset(46,22),
-        Position = UDim2.new(1,-54,0,6),
-        BackgroundColor3 = CARD2,
-        Text = "SAVE",
-        Font = Enum.Font.GothamBold,
-        TextSize = 7,
-        TextColor3 = CYAN,
-        AutoButtonColor = false
-    }, card)
-
-    Corner(save,5)
-    Stroke(save,BLUE,1)
-
-    local copy = New("TextButton", {
-        Size = UDim2.fromOffset(96,17),
-        Position = UDim2.new(1,-104,0,34),
-        BackgroundTransparency = 1,
-        Text = "COPY ID",
-        Font = Enum.Font.Gotham,
-        TextSize = 7,
-        TextColor3 = GRAY,
-        AutoButtonColor = false
-    }, card)
-
-    play.MouseButton1Click:Connect(function()
-        if PlayEmote(id) then
-            play.Text = "PLAYING"
-            play.TextColor3 = GREEN
-
-            task.delay(.8,function()
-                if play and play.Parent then
-                    play.Text = "PLAY"
-                end
-            end)
-        else
-            play.Text = "ERROR"
-            play.TextColor3 = RED
-
-            task.delay(1,function()
-                if play and play.Parent then
-                    play.Text = "PLAY"
-                    play.TextColor3 = GREEN
-                end
-            end)
-        end
+        border.Color = Cyan
+        border.Transparency = 0.05
     end)
 
-    save.MouseButton1Click:Connect(function()
-        local exists = false
+    Connect(card.MouseLeave, function()
+        TweenService:Create(
+            card,
+            TweenInfo.new(
+                0.3,
+                Enum.EasingStyle.Sine,
+                Enum.EasingDirection.Out
+            ),
+            {
+                BackgroundColor3 =
+                    Color3.fromRGB(13, 16, 32)
+            }
+        ):Play()
 
-        for _,saved in ipairs(SavedEmotes) do
-            if tostring(saved.Id) == tostring(id) then
-                exists = true
+        border.Transparency = 0.3
+    end)
+
+    Connect(card.Activated, function()
+        ApplyPack(packName)
+    end)
+
+    table.insert(PackCards, {
+        Button = card,
+        Name = packName
+    })
+
+    return card
+end
+
+local function RenderPacks(filter)
+
+    ClearContent()
+
+    local query =
+        string.lower(
+            tostring(filter or "")
+        )
+
+    for packName in pairs(AnimationPacks) do
+
+        if query == ""
+        or string.find(
+            string.lower(packName),
+            query,
+            1,
+            true
+        ) then
+
+            CreatePackCard(packName)
+
+        end
+    end
+
+    task.defer(function()
+
+        if ContentLayout then
+
+            Content.CanvasSize =
+                UDim2.new(
+                    0,
+                    0,
+                    0,
+                    ContentLayout.AbsoluteContentSize.Y + 20
+                )
+
+        end
+
+    end)
+end
+
+--==============================================================--
+-- SIDEBAR BUTTONS
+--==============================================================--
+
+local function CreateSidebarButton(text, callback)
+
+    local b = MakeButton(
+        Sidebar,
+        text
+    )
+
+    b.Size = UDim2.new(1, -14, 0, 36)
+
+    Connect(b.Activated, function()
+        callback()
+    end)
+
+    return b
+end
+
+CreateSidebarButton(
+    "HOME ",
+    function()
+
+        Search.Text = ""
+        RenderPacks("")
+
+        Status.Text =
+            "HOME • 32 PACKS SẴN SÀNG "
+    end
+)
+
+CreateSidebarButton(
+    "ANIMATION ",
+    function()
+
+        Search.Text = ""
+        RenderPacks("")
+
+        Status.Text =
+            "ANIMATION • CHỌN PACK "
+    end
+)
+
+CreateSidebarButton(
+    "CONTROL ",
+    function()
+
+        ClearContent()
+
+        local info = Instance.new("TextLabel")
+        info.Size = UDim2.new(1, -4, 0, 100)
+        info.BackgroundTransparency = 1
+        info.Text =
+            "CONTROL \n\n" ..
+            "Chọn Animation Pack để áp dụng.\n" ..
+            "Animation sẽ tự áp lại sau respawn."
+        info.TextColor3 = White
+        info.TextSize = 13
+        info.Font = Enum.Font.GothamBold
+        info.TextWrapped = true
+        info.Parent = Content
+
+        Status.Text =
+            "CONTROL • READY "
+    end
+)
+
+CreateSidebarButton(
+    "SETTINGS ",
+    function()
+
+        ClearContent()
+
+        local toggle =
+            MakeButton(
+                Content,
+                "EFFECTS: " ..
+                (EffectsEnabled and "ON" or "OFF") ..
+                " "
+            )
+
+        toggle.Size =
+            UDim2.new(1, -4, 0, 46)
+
+        Connect(toggle.Activated, function()
+
+            EffectsEnabled =
+                not EffectsEnabled
+
+            toggle.Text =
+                "EFFECTS: " ..
+                (EffectsEnabled and "ON" or "OFF") ..
+                " "
+        end)
+
+        Status.Text =
+            "SETTINGS • EFFECTS "
+    end
+)
+
+CreateSidebarButton(
+    "COMING SOON ",
+    function()
+
+        ClearContent()
+
+        local info = Instance.new("TextLabel")
+        info.Size = UDim2.new(1, -4, 0, 90)
+        info.BackgroundTransparency = 1
+        info.Text =
+            "COMING SOON \n\n" ..
+            "Tính năng mới sẽ được thêm sau."
+        info.TextColor3 = Color3.fromRGB(180, 195, 215)
+        info.TextSize = 14
+        info.Font = Enum.Font.GothamBold
+        info.TextWrapped = true
+        info.Parent = Content
+
+        Status.Text =
+            "COMING SOON "
+    end
+)
+
+--==============================================================--
+-- SEARCH
+--==============================================================--
+
+Connect(Search:GetPropertyChangedSignal("Text"), function()
+
+    RenderPacks(Search.Text)
+
+end)
+
+--==============================================================--
+-- OPEN / CLOSE
+--==============================================================--
+
+local MainOpen = true
+
+local function ShowMain()
+
+    MainOpen = true
+    Main.Visible = true
+    MenuButton.Visible = false
+
+    Main.Size =
+        UDim2.new(0, 590, 0, 350)
+
+    TweenService:Create(
+        Main,
+        TweenInfo.new(
+            0.35,
+            Enum.EasingStyle.Quint,
+            Enum.EasingDirection.Out
+        ),
+        {
+            Size =
+                UDim2.new(0, 620, 0, 370)
+        }
+    ):Play()
+end
+
+local function HideMain()
+
+    MainOpen = false
+
+    local tween =
+        TweenService:Create(
+            Main,
+            TweenInfo.new(
+                0.3,
+                Enum.EasingStyle.Quint,
+                Enum.EasingDirection.In
+            ),
+            {
+                Size =
+                    UDim2.new(0, 590, 0, 350)
+            }
+        )
+
+    tween:Play()
+
+    tween.Completed:Once(function()
+
+        if not MainOpen then
+            Main.Visible = false
+            MenuButton.Visible = true
+        end
+
+    end)
+end
+
+Connect(Minimize.Activated, HideMain)
+
+Connect(MenuButton.Activated, ShowMain)
+
+Connect(Close.Activated, function()
+
+    Cleanup()
+
+end)
+
+--==============================================================--
+-- SLOW NEON BORDER
+--==============================================================--
+
+task.spawn(function()
+
+    local hue = 0
+
+    while Alive and Gui.Parent do
+
+        if EffectsEnabled then
+
+            hue += 0.0015
+
+            if hue >= 1 then
+                hue = 0
+            end
+
+            local c1 =
+                Color3.fromHSV(
+                    hue,
+                    0.85,
+                    1
+                )
+
+            local c2 =
+                Color3.fromHSV(
+                    (hue + 0.16) % 1,
+                    0.85,
+                    1
+                )
+
+            MainStroke.Color = c1
+
+            if MenuButton.Parent then
+                local s =
+                    MenuButton:FindFirstChildOfClass(
+                        "UIStroke"
+                    )
+
+                if s then
+                    s.Color = c2
+                end
+            end
+
+        end
+
+        task.wait(0.08)
+
+    end
+
+end)
+
+--==============================================================--
+-- SLOW TITLE TWO-COLOR SHINE
+--==============================================================--
+
+local TitleGradient =
+    Instance.new("UIGradient")
+
+TitleGradient.Color =
+    ColorSequence.new({
+        ColorSequenceKeypoint.new(
+            0,
+            Cyan
+        ),
+
+        ColorSequenceKeypoint.new(
+            0.5,
+            White
+        ),
+
+        ColorSequenceKeypoint.new(
+            1,
+            Purple
+        )
+    })
+
+TitleGradient.Parent = Title
+
+task.spawn(function()
+
+    local offset = -1
+
+    while Alive and Gui.Parent do
+
+        if EffectsEnabled then
+
+            offset += 0.006
+
+            if offset > 1 then
+                offset = -1
+            end
+
+            TitleGradient.Offset =
+                Vector2.new(
+                    offset,
+                    0
+                )
+
+        end
+
+        task.wait(0.07)
+
+    end
+
+end)
+
+--==============================================================--
+-- SLOW SHINE LINE
+--==============================================================--
+
+local ShineLine = Instance.new("Frame")
+ShineLine.Size = UDim2.new(0, 75, 0, 2)
+ShineLine.Position = UDim2.new(0, 64, 0, 55)
+ShineLine.BackgroundColor3 = Cyan
+ShineLine.BorderSizePixel = 0
+ShineLine.Parent = Top
+
+Corner(ShineLine, 2)
+
+task.spawn(function()
+
+    while Alive and Gui.Parent do
+
+        if EffectsEnabled then
+
+            local grow =
+                TweenService:Create(
+                    ShineLine,
+                    TweenInfo.new(
+                        1.35,
+                        Enum.EasingStyle.Sine,
+                        Enum.EasingDirection.InOut
+                    ),
+                    {
+                        Size =
+                            UDim2.new(
+                                0,
+                                190,
+                                0,
+                                2
+                            )
+                    }
+                )
+
+            grow:Play()
+            grow.Completed:Wait()
+
+            if not Alive then
                 break
             end
-        end
 
-        if not exists then
-            table.insert(SavedEmotes,{
-                Id = tostring(id),
-                Name = tostring(name)
-            })
+            local shrink =
+                TweenService:Create(
+                    ShineLine,
+                    TweenInfo.new(
+                        1.35,
+                        Enum.EasingStyle.Sine,
+                        Enum.EasingDirection.InOut
+                    ),
+                    {
+                        Size =
+                            UDim2.new(
+                                0,
+                                75,
+                                0,
+                                2
+                            )
+                    }
+                )
 
-            saveSaved()
+            shrink:Play()
+            shrink.Completed:Wait()
 
-            save.Text = "SAVED"
-            save.TextColor3 = GREEN
         else
-            save.Text = "EXISTS"
+            task.wait(0.5)
         end
 
-        task.delay(1,function()
-            if save and save.Parent then
-                save.Text = "SAVE"
-                save.TextColor3 = CYAN
-            end
-        end)
-    end)
-
-    copy.MouseButton1Click:Connect(function()
-        CopyText(id)
-
-        copy.Text = "COPIED!"
-        copy.TextColor3 = GREEN
-
-        task.delay(1,function()
-            if copy and copy.Parent then
-                copy.Text = "COPY ID"
-                copy.TextColor3 = GRAY
-            end
-        end)
-    end)
-
-    EmoteCards[tostring(id)] = card
-end
-
---============================================================--
--- CATALOG SEARCH
---============================================================--
-
-local CatalogPage = 1
-local CatalogSearchRunning = false
-
-local function searchCatalog()
-    if CatalogSearchRunning then return end
-
-    CatalogSearchRunning = true
-
-    clearEmoteList()
-
-    local query = EmoteSearch.Text
-
-    if query == "" then
-        query = "dance"
     end
 
-    local ok,result = pcall(function()
-        local params = CatalogSearchParams.new()
+end)
 
-        params.SearchKeyword = query
-        params.AssetTypes = {
-            Enum.AvatarAssetType.EmoteAnimation
-        }
+--==============================================================--
+-- RESPAWN AUTO APPLY
+--==============================================================--
 
-        params.SortType = Enum.CatalogSortType.Relevance
-        params.IncludeOffSale = true
-        params.Limit = 30
+Connect(
+    Player.CharacterAdded,
+    function()
 
-        return AvatarEditorService:SearchCatalog(params)
-    end)
+        if not CurrentPackName then
+            return
+        end
 
-    if ok and result then
-        local page = result
+        local savedPack =
+            CurrentPackName
 
-        local success = pcall(function()
-            local current = page:GetCurrentPage()
+        task.spawn(function()
 
-            for _,item in ipairs(current) do
-                createEmoteCard({
-                    Id = item.Id,
-                    Name = item.Name
-                })
+            task.wait(0.5)
+
+            if Alive
+            and savedPack
+            and AnimationPacks[savedPack] then
+
+                ApplyPack(savedPack)
+
             end
+
         end)
 
-        if not success then
-            local fallback = {
-                {
-                    Id = 115314801778772,
-                    Name = "Dance If Youre The Best"
-                }
-            }
-
-            for _,item in ipairs(fallback) do
-                createEmoteCard(item)
-            end
-        end
-    else
-        -- R6 / executor fallback
-        createEmoteCard({
-            Id = 115314801778772,
-            Name = "Dance If Youre The Best"
-        })
     end
+)
 
-    CatalogSearchRunning = false
-end
+--==============================================================--
+-- AUTO UPDATE CONTENT SIZE
+--==============================================================--
 
---============================================================--
--- SEARCH BUTTON
---============================================================--
+Connect(
+    ContentLayout:GetPropertyChangedSignal(
+        "AbsoluteContentSize"
+    ),
+    function()
 
-local SearchButton = New("TextButton", {
-    Size = UDim2.fromOffset(343,38),
-    Position = UDim2.fromOffset(0,48),
-    BackgroundColor3 = CARD2,
-    Text = "SEARCH EMOTES",
-    Font = Enum.Font.GothamBold,
-    TextSize = 9,
-    TextColor3 = CYAN,
-    AutoButtonColor = false
-}, EmotePage)
-
-Corner(SearchButton,8)
-Stroke(SearchButton,BLUE,1)
-
-SearchButton.MouseButton1Click:Connect(searchCatalog)
-
-EmoteSearch.FocusLost:Connect(function(enter)
-    if enter then
-        searchCatalog()
-    end
-end)
-
---============================================================--
--- SAVED TAB
---============================================================--
-
-local function showSaved()
-    clearEmoteList()
-
-    EmoteInfo.Text = "ZYNTRIX PRIME • SAVED EMOTES"
-
-    for _,saved in ipairs(SavedEmotes) do
-        createEmoteCard({
-            Id = saved.Id,
-            Name = saved.Name
-        })
-    end
-end
-
-local function showCatalog()
-    EmoteInfo.Text = "ZYNTRIX PRIME • EMOTE CATALOG"
-    searchCatalog()
-end
-
-EmoteTab1.MouseButton1Click:Connect(function()
-    EmoteTab1.TextColor3 = CYAN
-    EmoteTab2.TextColor3 = GRAY
-    showCatalog()
-end)
-
-EmoteTab2.MouseButton1Click:Connect(function()
-    EmoteTab1.TextColor3 = GRAY
-    EmoteTab2.TextColor3 = CYAN
-    showSaved()
-end)
-
---============================================================--
--- MANUAL EMOTE ID
---============================================================--
-
-local ManualID = New("TextBox", {
-    Size = UDim2.fromOffset(160,32),
-    Position = UDim2.fromOffset(0,91),
-    BackgroundColor3 = CARD,
-    PlaceholderText = "Emote ID...",
-    PlaceholderColor3 = GRAY,
-    Text = "",
-    TextColor3 = WHITE,
-    Font = Enum.Font.Gotham,
-    TextSize = 9,
-    ClearTextOnFocus = false
-}, EmotePage)
-
-Corner(ManualID,7)
-Stroke(ManualID,PURPLE2,1)
-
-local ManualPlay = New("TextButton", {
-    Size = UDim2.fromOffset(78,32),
-    Position = UDim2.fromOffset(168,91),
-    BackgroundColor3 = CARD2,
-    Text = "PLAY ID",
-    Font = Enum.Font.GothamBold,
-    TextSize = 8,
-    TextColor3 = GREEN,
-    AutoButtonColor = false
-}, EmotePage)
-
-Corner(ManualPlay,7)
-Stroke(ManualPlay,GREEN,1)
-
-local StopButton = New("TextButton", {
-    Size = UDim2.fromOffset(78,32),
-    Position = UDim2.fromOffset(252,91),
-    BackgroundColor3 = CARD2,
-    Text = "STOP",
-    Font = Enum.Font.GothamBold,
-    TextSize = 8,
-    TextColor3 = RED,
-    AutoButtonColor = false
-}, EmotePage)
-
-Corner(StopButton,7)
-Stroke(StopButton,RED,1)
-
-ManualPlay.MouseButton1Click:Connect(function()
-    if ManualID.Text ~= "" then
-        PlayEmote(ManualID.Text)
-    end
-end)
-
-StopButton.MouseButton1Click:Connect(stopEmote)
-
---============================================================--
--- PAGE SWITCH
---============================================================--
-
-local PlaceholderPage = New("Frame", {
-    Size = UDim2.fromScale(1,1),
-    BackgroundTransparency = 1,
-    Visible = false
-}, Content)
-
-local PlaceholderTitle = New("TextLabel", {
-    Size = UDim2.fromOffset(343,55),
-    Position = UDim2.fromOffset(0,50),
-    BackgroundColor3 = CARD,
-    Text = "COMING SOON",
-    Font = Enum.Font.GothamBold,
-    TextSize = 16,
-    TextColor3 = PURPLE,
-    TextXAlignment = Enum.TextXAlignment.Center
-}, PlaceholderPage)
-
-Corner(PlaceholderTitle,10)
-Stroke(PlaceholderTitle,PURPLE,1)
-
-local function setTab(tab)
-    CurrentTab = tab
-
-    AnimPage.Visible = tab == "ANIMATION"
-    EmotePage.Visible = tab == "EMOTE"
-    PlaceholderPage.Visible =
-        tab == "ITEMS"
-        or tab == "GAMES"
-        or tab == "SETTINGS"
-
-    local info = {
-        ANIMATION = AnimationTab,
-        EMOTE = EmoteTab,
-        ITEMS = ItemsTab,
-        GAMES = GamesTab,
-        SETTINGS = SettingsTab
-    }
-
-    for name,button in pairs(info) do
-        if name == tab then
-            button.BackgroundColor3 = Color3.fromRGB(50,22,65)
-            button.TextColor3 = CYAN
-            button.BackgroundTransparency = .05
-        else
-            button.BackgroundColor3 = CARD2
-            button.TextColor3 = GRAY
-            button.BackgroundTransparency = .25
-        end
-    end
-end
-
-AnimationTab.MouseButton1Click:Connect(function()
-    setTab("ANIMATION")
-end)
-
-EmoteTab.MouseButton1Click:Connect(function()
-    setTab("EMOTE")
-
-    if #EmoteList:GetChildren() <= 1 then
-        searchCatalog()
-    end
-end)
-
-ItemsTab.MouseButton1Click:Connect(function()
-    setTab("ITEMS")
-end)
-
-GamesTab.MouseButton1Click:Connect(function()
-    setTab("GAMES")
-end)
-
-SettingsTab.MouseButton1Click:Connect(function()
-    setTab("SETTINGS")
-end)
-
---============================================================--
--- MINI BUTTON
---============================================================--
-
-local OpenButton = New("TextButton", {
-    Size = UDim2.fromOffset(50,50),
-    Position = UDim2.new(0,15,0.5,-25),
-    BackgroundColor3 = CARD2,
-    Text = "Z",
-    Font = Enum.Font.GothamBlack,
-    TextSize = 21,
-    TextColor3 = CYAN,
-    Visible = false,
-    AutoButtonColor = false
-}, GUI)
-
-Corner(OpenButton,14)
-Stroke(OpenButton,PURPLE,2)
-
-local function hideUI()
-    Main.Visible = false
-    OpenButton.Visible = true
-end
-
-local function showUI()
-    Main.Visible = true
-    OpenButton.Visible = false
-end
-
-MinButton.MouseButton1Click:Connect(hideUI)
-CloseButton.MouseButton1Click:Connect(hideUI)
-OpenButton.MouseButton1Click:Connect(showUI)
-
---============================================================--
--- KEY TOGGLE
---============================================================--
-
-UIS.InputBegan:Connect(function(input,processed)
-    if processed then return end
-
-    if input.KeyCode == Enum.KeyCode.G then
-        if Main.Visible then
-            hideUI()
-        else
-            showUI()
-        end
-    end
-end)
-
---============================================================--
--- RESPawn ANIMATION FIX
---============================================================--
-
-LP.CharacterAdded:Connect(function(character)
-    task.spawn(function()
-        task.wait(.15)
-
-        if CurrentPack then
-            applyPack(CurrentPack)
-        end
-
-        task.wait(.25)
-
-        if CurrentPack then
-            applyPack(CurrentPack)
-        end
-
-        task.wait(.55)
-
-        if CurrentPack then
-            applyPack(CurrentPack)
-        end
-
-        task.wait(.8)
-
-        if CurrentPack then
-            applyPack(CurrentPack)
-        end
-    end)
-end)
-
---============================================================--
--- ANIMATE REPLACEMENT FIX
---============================================================--
-
-LP.CharacterAdded:Connect(function(character)
-
-    character.ChildAdded:Connect(function(child)
-        if child.Name == "Animate" and CurrentPack then
-            task.wait(.15)
-            applyPack(CurrentPack)
-        end
-    end)
-
-end)
-
---============================================================--
--- SHIMMER
---============================================================--
-
-task.spawn(function()
-    while GUI.Parent do
-        pcall(function()
-            TitleGradient.Offset = Vector2.new(-1,0)
-
-            Tween(
-                TitleGradient,
-                1.5,
-                {Offset = Vector2.new(1,0)}
+        Content.CanvasSize =
+            UDim2.new(
+                0,
+                0,
+                0,
+                ContentLayout.AbsoluteContentSize.Y + 20
             )
-        end)
 
-        task.wait(2)
     end
-end)
+)
 
---============================================================--
--- GLOW PULSE
---============================================================--
+Connect(
+    SidebarLayout:GetPropertyChangedSignal(
+        "AbsoluteContentSize"
+    ),
+    function()
 
-task.spawn(function()
-    while GUI.Parent do
-        Tween(Glow,.8,{Transparency=.65})
-        task.wait(.8)
+        Sidebar.CanvasSize =
+            UDim2.new(
+                0,
+                0,
+                0,
+                SidebarLayout.AbsoluteContentSize.Y + 20
+            )
 
-        Tween(Glow,.8,{Transparency=.9})
-        task.wait(.8)
     end
-end)
+)
 
---============================================================--
--- INITIALIZE
---============================================================--
+--==============================================================--
+-- MOBILE SCALE
+--==============================================================--
 
-setTab("ANIMATION")
-updateAnimationCards()
+local function UpdateMobileSize()
 
-print("==============================================")
-print(" ZYNTRIX VIP PRIME • ALL-IN-ONE")
-print(" ANIMATION + EMOTE")
-print(" Logo ID:",11425468695)
-print(" Animation Packs:",#sortedPacks)
-print(" Respawn Fix: ON")
-print(" Mobile UI: ON")
-print("==============================================")
+    local camera =
+        workspace.CurrentCamera
+
+    if not camera then
+        return
+    end
+
+    local viewport =
+        camera.ViewportSize
+
+    if viewport.X <= 700 then
+
+        Main.Size =
+            UDim2.new(
+                0.92,
+                0,
+                0,
+                370
+            )
+
+        Main.Position =
+            UDim2.new(
+                0.04,
+                0,
+                0.5,
+                -185
+            )
+
+        Sidebar.Size =
+            UDim2.new(
+                0,
+                115,
+                0,
+                245
+            )
+
+        Content.Position =
+            UDim2.new(
+                0,
+                143,
+                0,
+                108
+            )
+
+        Content.Size =
+            UDim2.new(
+                1,
+                -157,
+                0,
+                245
+            )
+
+    else
+
+        Main.Size =
+            UDim2.new(
+                0,
+                620,
+                0,
+                370
+            )
+
+        Main.Position =
+            UDim2.new(
+                0.5,
+                -310,
+                0.5,
+                -185
+            )
+
+        Sidebar.Size =
+            UDim2.new(
+                0,
+                135,
+                0,
+                245
+            )
+
+        Content.Position =
+            UDim2.new(
+                0,
+                163,
+                0,
+                108
+            )
+
+        Content.Size =
+            UDim2.new(
+                0,
+                441,
+                0,
+                245
+            )
+
+    end
+
+end
+
+pcall(UpdateMobileSize)
+
+if workspace.CurrentCamera then
+
+    Connect(
+        workspace.CurrentCamera:GetPropertyChangedSignal(
+            "ViewportSize"
+        ),
+        UpdateMobileSize
+    )
+
+end
+
+--==============================================================--
+-- INITIAL RENDER
+--==============================================================--
+
+RenderPacks("")
+
+Status.Text =
+    "READY • 32 PACKS • CHỌN ANIMATION "
+
+print(
+    "[ZYNTRIX VIP PRIME] Animation Hub loaded successfully."
+)
