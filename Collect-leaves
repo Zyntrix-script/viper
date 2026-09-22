@@ -16,10 +16,10 @@ local Player = Players.LocalPlayer
 --==============================================================--
 
 local UI_IMAGE =
-    "rbxthumb://type=Asset&id=6293835670&w=420&h=420"
+    "rbxthumb://type=Asset&id=139560886954495&w=420&h=420"
 
 local MENU_IMAGE =
-    "rbxthumb://type=Asset&id=145787888&w=420&h=420"
+    "rbxthumb://type=Asset&id=88589651965141&w=420&h=420"
 
 local MAIN_NAME = "ZYNTRIX_ANIMATION_HUB"
 
